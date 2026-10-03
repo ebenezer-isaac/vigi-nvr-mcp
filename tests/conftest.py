@@ -5,11 +5,11 @@ from collections.abc import AsyncIterator, Callable
 import pytest
 
 from tests.helpers import NVR_PREFIX, FakeNvr, nvr_env
-from tplink_local_mcp.core.config import DeviceSettings, load_device_settings
-from tplink_local_mcp.devices.vigi_nvr.auth import Authenticator
-from tplink_local_mcp.devices.vigi_nvr.client import NvrClient
-from tplink_local_mcp.devices.vigi_nvr.tools import ToolContext
-from tplink_local_mcp.devices.vigi_nvr.transport import NvrTransport
+from vigi_nvr_mcp.auth import Authenticator
+from vigi_nvr_mcp.client import NvrClient
+from vigi_nvr_mcp.core.config import DeviceSettings, load_device_settings
+from vigi_nvr_mcp.tools import ToolContext
+from vigi_nvr_mcp.transport import NvrTransport
 
 
 @pytest.fixture

@@ -3,20 +3,18 @@ from __future__ import annotations
 import pytest
 
 from tests.helpers import NVR_PREFIX, nvr_env
-from tplink_local_mcp.core import envelope, lockout
-from tplink_local_mcp.core.config import load_device_settings
-from tplink_local_mcp.core.errors import (
-    ERROR_CODES,
+from vigi_nvr_mcp.core import breaker, envelope
+from vigi_nvr_mcp.core.config import load_device_settings
+from vigi_nvr_mcp.core.errors import (
     ApiError,
     AuthFailed,
     LockoutGuard,
     PreconditionFailed,
     TokenExpired,
-    describe_error_code,
-    error_symbol,
 )
-from tplink_local_mcp.core.tooling import run_tool
-from tplink_local_mcp.core.write_gate import check_write_gate
+from vigi_nvr_mcp.core.tooling import run_tool
+from vigi_nvr_mcp.core.write_gate import check_write_gate
+from vigi_nvr_mcp.errors import ERROR_CODES, describe_error_code, error_symbol
 
 
 def test_ok_shape() -> None:
@@ -37,7 +35,9 @@ def test_fail_shape_and_details_copied() -> None:
 
 
 def test_auth_failed_surfaces_attempts_left_and_max() -> None:
-    result = envelope.from_error(AuthFailed("bad", code=-40401, attempts_left=3, max_attempts=10))
+    result = envelope.from_error(
+        AuthFailed("bad", code=-40401, symbol="EUNAUTH", attempts_left=3, max_attempts=10)
+    )
     assert result["error"]["code"] == "AUTH_FAILED"
     assert result["error"]["details"] == {
         "device_error_code": -40401,
@@ -50,15 +50,23 @@ def test_auth_failed_surfaces_attempts_left_and_max() -> None:
 
 
 @pytest.mark.parametrize(
-    ("code", "left", "locked"),
-    [(-40404, None, True), (-40408, None, True), (-40401, 0, True), (-40401, 1, False)],
+    ("kwargs", "locked"),
+    [
+        ({"locked": True}, True),
+        ({"attempts_left": 0}, True),
+        ({"lock_seconds_left": 60}, True),
+        ({"attempts_left": 1}, False),
+        ({}, False),
+    ],
 )
-def test_auth_failed_locked_flag(code: int, left: int | None, locked: bool) -> None:
-    assert AuthFailed("x", code=code, attempts_left=left).locked is locked
+def test_auth_failed_locked_flag(kwargs: dict, locked: bool) -> None:
+    assert AuthFailed("x", **kwargs).locked is locked
 
 
 def test_api_error_includes_symbol_and_meaning() -> None:
-    details = envelope.from_error(ApiError(-40209))["error"]["details"]
+    err = ApiError(-40209, symbol="EINVARG", meaning="Invalid argument")
+    assert "EINVARG" in str(err)
+    details = envelope.from_error(err)["error"]["details"]
     assert details == {
         "device_error_code": -40209,
         "symbol": "EINVARG",
@@ -88,7 +96,9 @@ def test_error_table_has_session_codes() -> None:
     ]:
         assert ERROR_CODES[code][0] == symbol
     assert error_symbol(1) == "UNKNOWN"
-    assert describe_error_code(1) == "Unknown device error code"
+    assert error_symbol(-71554) == "ENVRCHMAUTHFAIL"  # catalog fallback
+    assert describe_error_code(1) == "No curated meaning; see symbol"
+    assert describe_error_code(-40404).startswith("Account temporarily locked")
 
 
 def test_error_kinds_are_distinct() -> None:
@@ -111,7 +121,7 @@ def test_write_gate_read_passes() -> None:
 def test_write_gate_refuses_when_disallowed(confirm: object) -> None:
     refusal = check_write_gate(_settings(), "set", confirm)
     assert refusal is not None
-    assert "TPLINK_NVR_ALLOW_WRITES" in refusal["error"]["message"]
+    assert "VIGI_NVR_ALLOW_WRITES" in refusal["error"]["message"]
 
 
 @pytest.mark.parametrize("confirm", [False, "true", "yes", 1, None])
@@ -128,16 +138,16 @@ def test_write_gate_passes_with_both_keys() -> None:
 
 
 def test_ledger_is_immutable_and_rebuilt() -> None:
-    ledger = lockout.LoginLedger()
-    after = lockout.record_failure(ledger, {"x": 1})
+    ledger = breaker.LoginLedger()
+    after = breaker.record_failure(ledger, {"x": 1})
     assert (ledger.failed, after.failed) == (0, 1)
-    assert lockout.record_success(after).successful == 1
+    assert breaker.record_success(after).successful == 1
 
 
 def test_login_disabled_guard_names_variable() -> None:
-    with pytest.raises(LockoutGuard, match="TPLINK_NVR_LOGIN_DISABLED"):
-        lockout.check_login_allowed(
-            lockout.LoginLedger(), _settings(LOGIN_DISABLED="true"), explicit=True
+    with pytest.raises(LockoutGuard, match="VIGI_NVR_LOGIN_DISABLED"):
+        breaker.check_login_allowed(
+            breaker.LoginLedger(), _settings(LOGIN_DISABLED="true"), explicit=True
         )
 
 
@@ -156,9 +166,9 @@ def test_login_disabled_guard_names_variable() -> None:
 def test_remaining_attempt_guard(remaining, explicit, refused) -> None:
     if refused:
         with pytest.raises(LockoutGuard):
-            lockout.check_remaining_attempts(remaining, explicit=explicit)
+            breaker.check_remaining_attempts(remaining, explicit=explicit)
     else:
-        lockout.check_remaining_attempts(remaining, explicit=explicit)
+        breaker.check_remaining_attempts(remaining, explicit=explicit)
 
 
 # ---- run_tool -----------------------------------------------------------------
@@ -179,3 +189,45 @@ async def test_run_tool_maps_errors_and_redacts() -> None:
     internal = await run_tool("t", boom)
     assert internal["error"]["code"] == "INTERNAL_ERROR"
     assert "internal detail" not in internal["error"]["message"]
+
+
+# ---- serial lock / transport masks / cli helpers ----------------------------------
+
+
+async def test_serial_lock_serialises() -> None:
+    import asyncio
+
+    from vigi_nvr_mcp.core.serial import SerialLock
+
+    lock, order = SerialLock(), []
+
+    async def job(name: str) -> str:
+        order.append(f"{name}-start")
+        await asyncio.sleep(0)
+        order.append(f"{name}-end")
+        return name
+
+    results = await asyncio.gather(lock.run(lambda: job("a")), lock.run(lambda: job("b")))
+    assert results == ["a", "b"]
+    assert order == ["a-start", "a-end", "b-start", "b-end"]
+    assert lock.busy is False
+
+
+def test_token_masks_are_registered_once_and_applied() -> None:
+    from vigi_nvr_mcp.core import transport
+
+    transport.register_token_mask(r"sid=\w+", "sid=<x>")
+    transport.register_token_mask(r"sid=\w+", "sid=<x>")
+    assert sum(p.pattern == r"sid=\w+" for p, _ in transport._MASKS) == 1
+    assert transport.mask_tokens("/a?sid=abc123") == "/a?sid=<x>"
+
+
+def test_cli_helpers(capsys) -> None:
+    from vigi_nvr_mcp.core.cli import configure_logging, emit_envelope, emit_lines
+
+    configure_logging("NOPE_LEVEL", {"NOPE_LEVEL": "bogus"})
+    assert emit_envelope(envelope.ok({"a": 1})) == 0
+    assert emit_envelope(envelope.fail("X", "m")) == 1
+    assert emit_lines(["one", "two"]) == 0
+    out = capsys.readouterr().out
+    assert '"success": true' in out and out.rstrip().endswith("two")

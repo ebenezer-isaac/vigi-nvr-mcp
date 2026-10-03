@@ -1,0 +1,49 @@
+# Example systemd unit. Copy to /etc/systemd/system/vigi-nvr-mcp.service.
+#
+#   sudo useradd --system --home /var/lib/vigi-nvr-mcp --shell /usr/sbin/nologin viginvrmcp
+#   sudo install -m 0600 -o viginvrmcp -g viginvrmcp .env.example /etc/vigi-nvr-mcp.env
+#   (edit /etc/vigi-nvr-mcp.env, then)
+#   sudo systemctl daemon-reload && sudo systemctl enable --now vigi-nvr-mcp
+#
+# The HTTP transport binds to loopback. Reach it over Tailscale or an SSH tunnel,
+# never by exposing it on the LAN: the server has no authentication of its own.
+
+[Unit]
+Description=vigi-nvr-mcp (MCP server for a local TP-Link VIGI NVR)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=viginvrmcp
+Group=viginvrmcp
+EnvironmentFile=/etc/vigi-nvr-mcp.env
+Environment=VIGI_MCP_TRANSPORT=streamable-http
+Environment=VIGI_MCP_HOST=127.0.0.1
+Environment=VIGI_NVR_BACKUP_DIR=/var/lib/vigi-nvr-mcp/backups
+WorkingDirectory=/var/lib/vigi-nvr-mcp
+StateDirectory=vigi-nvr-mcp
+StateDirectoryMode=0700
+ExecStart=/opt/vigi-nvr-mcp/.venv/bin/vigi-nvr-mcp
+Restart=on-failure
+RestartSec=10
+# Do not hammer a device that is rejecting logins: cap restarts.
+StartLimitIntervalSec=600
+StartLimitBurst=3
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/vigi-nvr-mcp
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=true
+LockPersonality=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

@@ -1,24 +1,26 @@
-"""Backend discovery/registration, the tplink_status tool, and the CLI."""
+"""Server build, nvr_status, CLI (--list-tools, --check-auth), and core isolation."""
 
 from __future__ import annotations
 
+import ast
 import json
+from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 
-from tests.helpers import DOC_HOST, FAKE_STOK_1, FakeNvr, nvr_env
-from tplink_local_mcp import __main__ as cli
-from tplink_local_mcp.core.backend import DeviceBackend
-from tplink_local_mcp.core.config import load_global_settings
-from tplink_local_mcp.core.errors import ConfigError
-from tplink_local_mcp.devices import all_backends
-from tplink_local_mcp.devices.archer_router import ArcherRouterBackend
-from tplink_local_mcp.devices.easysmart_switch import EasySmartSwitchBackend
-from tplink_local_mcp.devices.vigi_nvr import VigiNvrBackend
-from tplink_local_mcp.server import build_server, discover_backends
+from tests.helpers import FAKE_STOK_1, FakeNvr, nvr_env
+from vigi_nvr_mcp import cli
+from vigi_nvr_mcp.backend import NvrBackend
+from vigi_nvr_mcp.core.config import load_global_settings
+from vigi_nvr_mcp.core.errors import ConfigError
+from vigi_nvr_mcp.server import MCP_ENV_PREFIX, build_server
 
-NVR_TOOLS = {
+PACKAGE = Path(__file__).resolve().parent.parent / "vigi_nvr_mcp"
+
+EXPECTED_TOOLS = {
+    "nvr_status",
     "nvr_call",
     "nvr_login",
     "nvr_auth_status",
@@ -38,16 +40,12 @@ NVR_TOOLS = {
 }
 
 
-def _candidates(fake: FakeNvr) -> list[DeviceBackend]:
-    return [
-        VigiNvrBackend(http_transport=fake.transport()),
-        ArcherRouterBackend(),
-        EasySmartSwitchBackend(),
-    ]
+def _backend(fake: FakeNvr, **overrides: str) -> NvrBackend:
+    return NvrBackend.from_env(nvr_env(**overrides), http_transport=fake.transport())
 
 
-async def _tool_names(mcp) -> set[str]:
-    return {t.name for t in await mcp.list_tools()}
+def _build(fake: FakeNvr, **overrides: str):
+    return build_server(load_global_settings(MCP_ENV_PREFIX, {}), _backend(fake, **overrides))
 
 
 async def _call(mcp, name: str, args: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -61,123 +59,88 @@ async def _call(mcp, name: str, args: dict[str, Any] | None = None) -> dict[str,
     return json.loads(content[0].text)
 
 
-def test_all_backends_satisfy_protocol() -> None:
-    backends = all_backends()
-    assert [b.name for b in backends] == ["nvr", "router", "switch"]
-    assert [b.settings_prefix for b in backends] == [
-        "TPLINK_NVR_",
-        "TPLINK_ROUTER_",
-        "TPLINK_SWITCH_",
-    ]
-    assert [b.tool_prefix for b in backends] == ["nvr_", "router_", "switch_"]
-    assert all(isinstance(b, DeviceBackend) for b in backends)
+# ---- registration ---------------------------------------------------------------
 
 
-def test_nothing_configured(fake) -> None:
-    d = discover_backends({}, _candidates(fake))
-    assert d.configured == ()
-    assert [b.name for b in d.skipped] == ["nvr", "router", "switch"]
+async def test_registered_tools_match_expected_and_mcp_view(fake) -> None:
+    mcp, names = _build(fake)
+    assert set(names) == EXPECTED_TOOLS
+    assert len(names) == len(set(names))
+    assert {t.name for t in await mcp.list_tools()} == EXPECTED_TOOLS
+    assert all(n.startswith("nvr_") for n in names)
+    assert fake.requests == []  # building makes no device calls
 
 
-def test_only_nvr_configured(fake, caplog) -> None:
-    caplog.set_level("INFO")
-    d = discover_backends(nvr_env(), _candidates(fake))
-    assert [b.name for b in d.configured] == ["nvr"]
-    assert [b.name for b in d.skipped] == ["router", "switch"]
-    assert "TPLINK_ROUTER_HOST unset" in caplog.text
+def test_list_tools_needs_no_configuration(monkeypatch) -> None:
+    for key in [k for k in __import__("os").environ if k.startswith("VIGI_")]:
+        monkeypatch.delenv(key)
+    assert set(cli.list_tools()) == EXPECTED_TOOLS
 
 
-def test_configure_returns_new_instance(fake) -> None:
-    template = VigiNvrBackend(http_transport=fake.transport())
-    configured = template.configure(nvr_env())
-    assert configured is not template
-    assert template.context is None and configured.context is not None
+def test_cli_list_tools_prints_sorted_names(capsys) -> None:
+    assert cli.main(["--list-tools"]) == 0
+    assert capsys.readouterr().out.split() == sorted(EXPECTED_TOOLS)
 
 
-def test_invalid_settings_fail_fast(fake) -> None:
-    with pytest.raises(ConfigError, match="TPLINK_NVR_PORT"):
-        discover_backends(nvr_env(PORT="0"), _candidates(fake))
-    with pytest.raises(ConfigError, match="TPLINK_ROUTER_PASSWORD"):
-        discover_backends({"TPLINK_ROUTER_HOST": "192.0.2.1"}, _candidates(fake))
+def test_backend_from_env_fails_fast_on_bad_settings() -> None:
+    with pytest.raises(ConfigError, match="VIGI_NVR_PORT"):
+        NvrBackend.from_env(nvr_env(PORT="0"))
+    with pytest.raises(ConfigError, match="VIGI_NVR_HOST"):
+        NvrBackend.from_env({})
 
 
-def test_unconfigured_backend_cannot_register_tools() -> None:
-    from mcp.server.fastmcp import FastMCP
-
-    with pytest.raises(ConfigError):
-        VigiNvrBackend().register_tools(FastMCP("t"))
+# ---- nvr_status -----------------------------------------------------------------
 
 
-async def test_registration_configured_vs_not(fake) -> None:
-    env = {**nvr_env(), "TPLINK_SWITCH_HOST": "192.0.2.2", "TPLINK_SWITCH_PASSWORD": "pw"}
-    mcp = build_server(load_global_settings({}), discover_backends(env, _candidates(fake)))
-    names = await _tool_names(mcp)
-    assert names == NVR_TOOLS | {"tplink_status"}
-    assert not any(n.startswith(("router_", "switch_")) for n in names)
-    assert fake.requests == []  # building the server makes no device calls
-
-
-async def test_no_backends_only_status_tool(fake) -> None:
-    mcp = build_server(load_global_settings({}), discover_backends({}, _candidates(fake)))
-    assert await _tool_names(mcp) == {"tplink_status"}
-
-
-async def test_status_tool_reports_backends_and_health(fake) -> None:
-    env = {**nvr_env(), "TPLINK_ROUTER_HOST": "192.0.2.1", "TPLINK_ROUTER_PASSWORD": "pw"}
-    mcp = build_server(load_global_settings({}), discover_backends(env, _candidates(fake)))
-    status = await _call(mcp, "tplink_status")
+async def test_status_reports_health_without_logging_in(fake) -> None:
+    mcp, _ = _build(fake, ALLOW_WRITES="true", DRY_RUN="true")
+    status = await _call(mcp, "nvr_status")
     assert status["success"] is True
-    by_name = {b["name"]: b for b in status["data"]["backends"]}
-    nvr = by_name["nvr"]
-    assert nvr["configured"] is True
-    assert set(nvr["tools"]) == NVR_TOOLS
-    assert nvr["health"]["success"] is True
-    assert nvr["health"]["data"]["encrypt_type_selected"] == "2"
-    assert nvr["health"]["data"]["auth"]["authenticated"] is False
-    assert by_name["router"]["configured"] is True
-    assert by_name["router"]["health"]["error"]["code"] == "NOT_IMPLEMENTED"
-    assert by_name["switch"] == {
-        "name": "switch",
-        "configured": False,
-        "tool_prefix": "switch_",
-        "hint": "set TPLINK_SWITCH_HOST to enable",
+    health = status["data"]["health"]["data"]
+    assert health["encrypt_type_selected"] == "2"
+    assert health["auth"]["authenticated"] is False
+    assert health["policy"] == {
+        "writes_enabled": True,
+        "dry_run": True,
+        "login_disabled": False,
+        "max_login_failures": 1,
+        "verify_tls": False,
     }
-    assert fake.login_attempts == 0  # healthcheck never logs in
+    assert fake.login_attempts == 0
 
 
-async def test_status_health_reports_unreachable_nvr() -> None:
-    import httpx
-
+async def test_status_reports_unreachable_nvr() -> None:
     def down(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("refused", request=request)
 
-    backend = VigiNvrBackend(http_transport=httpx.MockTransport(down)).configure(nvr_env())
-    health = await backend.healthcheck()
-    assert health["error"]["code"] == "TRANSPORT_ERROR"
+    backend = NvrBackend.from_env(nvr_env(), http_transport=httpx.MockTransport(down))
+    mcp, _ = build_server(load_global_settings(MCP_ENV_PREFIX, {}), backend)
+    status = await _call(mcp, "nvr_status")
+    assert status["error"]["code"] == "TRANSPORT_ERROR"
+    assert status["error"]["details"]["policy"]["writes_enabled"] is False
 
 
-async def test_nvr_tool_end_to_end_via_mcp(fake) -> None:
-    mcp = build_server(load_global_settings({}), discover_backends(nvr_env(), _candidates(fake)))
+async def test_write_refused_end_to_end_via_mcp(fake) -> None:
+    mcp, _ = _build(fake)
     result = await _call(mcp, "nvr_call", {"method": "set", "module": "system", "params": {}})
     assert result["error"]["code"] == "WRITE_REFUSED"
     assert fake.requests == []
 
 
-# ---- check-auth ------------------------------------------------------------------
+# ---- check-auth -----------------------------------------------------------------
 
 
 async def test_check_auth_without_login_never_logs_in(fake) -> None:
-    backend = VigiNvrBackend(http_transport=fake.transport()).configure(nvr_env())
+    backend = _backend(fake)
     result = await backend.check_auth(login=False)
     await backend.aclose()
-    assert result["success"] is True
     assert result["data"]["encrypt_type_offered"] == ["1", "2"]
     assert "skipped" in result["data"]["login"]
     assert fake.login_attempts == 0
 
 
 async def test_check_auth_with_login_makes_exactly_one_attempt(fake) -> None:
-    backend = VigiNvrBackend(http_transport=fake.transport()).configure(nvr_env())
+    backend = _backend(fake)
     result = await backend.check_auth(login=True)
     await backend.aclose()
     assert result["data"]["login"] == "succeeded"
@@ -187,7 +150,7 @@ async def test_check_auth_with_login_makes_exactly_one_attempt(fake) -> None:
 
 async def test_check_auth_failed_login_reports_counters(fake) -> None:
     fake.password = "wrong"
-    backend = VigiNvrBackend(http_transport=fake.transport()).configure(nvr_env())
+    backend = _backend(fake)
     result = await backend.check_auth(login=True)
     await backend.aclose()
     assert result["error"]["code"] == "AUTH_FAILED"
@@ -196,34 +159,73 @@ async def test_check_auth_failed_login_reports_counters(fake) -> None:
     assert fake.login_attempts == 1
 
 
-async def test_check_auth_for_pending_backend() -> None:
-    env = {"TPLINK_ROUTER_HOST": "192.0.2.1", "TPLINK_ROUTER_PASSWORD": "pw"}
-    result = await cli.run_check_auth("router", login=True, environ=env)
-    assert result["error"]["code"] == "NOT_IMPLEMENTED"
+async def test_check_auth_unreachable() -> None:
+    def down(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused", request=request)
+
+    backend = NvrBackend.from_env(nvr_env(), http_transport=httpx.MockTransport(down))
+    assert (await backend.check_auth(login=True))["error"]["code"] == "TRANSPORT_ERROR"
 
 
-async def test_check_auth_requires_host() -> None:
-    with pytest.raises(ConfigError, match="TPLINK_NVR_HOST"):
-        await cli.run_check_auth("nvr", login=False, environ={})
+async def test_run_check_auth_requires_host() -> None:
+    with pytest.raises(ConfigError, match="VIGI_NVR_HOST"):
+        await cli.run_check_auth(login=False, environ={})
 
 
-def test_cli_login_requires_check_auth() -> None:
+def test_cli_flag_validation() -> None:
     with pytest.raises(SystemExit):
         cli.parse_args(["--login"])
-
-
-def test_cli_device_choices() -> None:
-    assert cli.parse_args(["--check-auth", "--device", "switch"]).device == "switch"
     with pytest.raises(SystemExit):
-        cli.parse_args(["--check-auth", "--device", "toaster"])
+        cli.parse_args(["--check-auth", "--list-tools"])
+    assert cli.parse_args(["--check-auth", "--login"]).login is True
 
 
 def test_cli_check_auth_missing_host_exit_code(monkeypatch, capsys) -> None:
-    for key in [k for k in __import__("os").environ if k.startswith("TPLINK_")]:
+    for key in [k for k in __import__("os").environ if k.startswith("VIGI_")]:
         monkeypatch.delenv(key)
     assert cli.main(["--check-auth", "--env-file", "/nonexistent/.env"]) == 2
-    assert "TPLINK_NVR_HOST" in capsys.readouterr().err
+    assert "VIGI_NVR_HOST" in capsys.readouterr().err
 
 
-def test_doc_host_constant_is_rfc5737() -> None:
-    assert DOC_HOST.startswith("192.0.2.")
+def test_cli_serve_config_error_exit_code(monkeypatch, capsys) -> None:
+    for key in [k for k in __import__("os").environ if k.startswith("VIGI_")]:
+        monkeypatch.delenv(key)
+    monkeypatch.setenv("VIGI_MCP_TRANSPORT", "sse")
+    assert cli.main(["--env-file", "/nonexistent/.env"]) == 2
+    assert "VIGI_MCP_TRANSPORT" in capsys.readouterr().err
+
+
+def test_cli_serve_runs_selected_transport(monkeypatch, caplog) -> None:
+    ran: list[str] = []
+    monkeypatch.setattr(
+        "mcp.server.fastmcp.FastMCP.run", lambda self, transport: ran.append(transport)
+    )
+    env = {**nvr_env(), "VIGI_MCP_TRANSPORT": "streamable-http", "VIGI_MCP_HOST": "0.0.0.0"}  # noqa: S104
+    cli.serve(env)
+    assert ran == ["streamable-http"]
+    assert "non-loopback" in caplog.text
+
+
+# ---- core isolation ---------------------------------------------------------------
+
+
+def test_core_imports_nothing_from_the_package() -> None:
+    """core/ is copied verbatim into sibling repos: only stdlib/third-party + core."""
+    for path in (PACKAGE / "core").glob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                if node.level >= 2:
+                    pytest.fail(f"{path.name} imports outside core: level {node.level}")
+                if node.module and node.module.startswith("vigi_nvr_mcp"):
+                    pytest.fail(f"{path.name} imports {node.module}")
+            if isinstance(node, ast.Import):
+                assert not any(a.name.startswith("vigi_nvr_mcp") for a in node.names)
+
+
+def test_core_is_device_agnostic() -> None:
+    words = ("vigi", "nvr", "stok=<", "tp-link", "tplink")
+    for path in (PACKAGE / "core").glob("*.py"):
+        text = path.read_text(encoding="utf-8").lower()
+        for word in words:
+            assert word not in text, f"{path.name} mentions {word!r}"

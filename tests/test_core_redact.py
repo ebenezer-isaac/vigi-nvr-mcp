@@ -4,7 +4,7 @@ import copy
 
 import pytest
 
-from tplink_local_mcp.core.redact import REDACTED, TRUNCATED, redact
+from vigi_nvr_mcp.core.redact import REDACTED, TRUNCATED, redact
 
 CT = "cipher" + "text"  # assembled so the secret scan does not flag this file
 

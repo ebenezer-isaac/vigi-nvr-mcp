@@ -43,7 +43,7 @@ LEAKS = {
     "hex32": "token " + "ab" * 16,
     "stok": "url /st" + "ok=abc123/ds",
     "cipher_field": '{"cipher' + 'text": "QUJDREVG"}',
-    "password_assign": "TPLINK_NVR_PASS" + "WORD=hunter2",
+    "password_assign": "VIGI_NVR_PASS" + "WORD=hunter2",
 }
 
 
@@ -62,8 +62,8 @@ def test_each_leak_pattern_is_detected(name: str) -> None:
         f"not private {_ip(172, 15, 0, 1)}",
         "POST https://<nvr-host>/st" + "ok=<token>/ds",
         'url = f"/st' + 'ok={token}/ds"',
-        "TPLINK_NVR_PASS" + "WORD=<your-nvr-password>",
-        "TPLINK_NVR_PASS" + "WORD=",
+        "VIGI_NVR_PASS" + "WORD=<your-nvr-password>",
+        "VIGI_NVR_PASS" + "WORD=",
         '{"cipher' + 'text": "<redacted>"}',
         "hex31 " + "a" * 31,
         "hex33 " + "a" * 33,
@@ -111,16 +111,14 @@ def test_repository_contains_no_secrets() -> None:
 
 
 def test_content_allowlist_is_minimal() -> None:
-    expected = frozenset({"tests/fixtures/vigi_nvr_auth_vectors.json"})
+    expected = frozenset({"tests/fixtures/auth_vectors.json"})
     assert expected == scanner.CONTENT_ALLOWLIST
 
 
 def test_allowlisted_fixture_holds_only_dummy_inputs() -> None:
     import json
 
-    data = json.loads(
-        (REPO_ROOT / "tests/fixtures/vigi_nvr_auth_vectors.json").read_text(encoding="utf-8")
-    )
+    data = json.loads((REPO_ROOT / "tests/fixtures/auth_vectors.json").read_text(encoding="utf-8"))
     assert data["inputs"] == {"password": "TestPass123", "nonce": "abcdefgh", "username": "admin"}
     text = json.dumps(data)
     for name, pattern in scanner.RULES:
@@ -130,3 +128,32 @@ def test_allowlisted_fixture_holds_only_dummy_inputs() -> None:
 
 def test_backup_dir_is_forbidden_path() -> None:
     assert scanner.forbidden_path_findings(["backups/nvr-config.bin"])
+
+
+def _load_gate():
+    spec = importlib.util.spec_from_file_location("gate", REPO_ROOT / "scripts" / "gate.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["gate"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_stub_scan_detects_markers_and_ellipsis_bodies(tmp_path: Path) -> None:
+    gate = _load_gate()
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    marker = "TO" + "DO"
+    (pkg / "a.py").write_text(
+        f"def f():\n    '''doc'''\n    ...\n\n# {marker}: later\n"
+        "def g():\n    raise NotImplemented" + "Error\n",
+        encoding="utf-8",
+    )
+    (pkg / "ok.py").write_text("def h():\n    return ...\n", encoding="utf-8")
+    problems = gate.scan_stubs(pkg)
+    assert len(problems) == 3
+    assert all(p.startswith("pkg/a.py") for p in problems)
+
+
+def test_stub_scan_is_clean_on_package() -> None:
+    assert _load_gate().scan_stubs(REPO_ROOT / "vigi_nvr_mcp") == []

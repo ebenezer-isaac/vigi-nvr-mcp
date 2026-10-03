@@ -3,13 +3,15 @@ from __future__ import annotations
 import pytest
 
 from tests.helpers import DOC_HOST, NVR_PREFIX, TEST_PASSWORD, nvr_env
-from tplink_local_mcp.core.config import (
+from vigi_nvr_mcp.core.config import (
     DeviceSettings,
     host_is_set,
     load_device_settings,
     load_global_settings,
 )
-from tplink_local_mcp.core.errors import ConfigError
+from vigi_nvr_mcp.core.errors import ConfigError
+
+MCP = "VIGI_MCP_"
 
 
 def load(**overrides: str) -> DeviceSettings:
@@ -30,18 +32,18 @@ def test_device_defaults() -> None:
     assert s.max_login_failures == 1
     assert s.backup_dir == "backups"
     assert s.base_url == f"https://{DOC_HOST}:443"
-    assert s.env_name("ALLOW_WRITES") == "TPLINK_NVR_ALLOW_WRITES"
+    assert s.env_name("ALLOW_WRITES") == "VIGI_NVR_ALLOW_WRITES"
 
 
 def test_prefixes_are_isolated() -> None:
     env = {
         **nvr_env(),
-        "TPLINK_ROUTER_HOST": "192.0.2.1",
-        "TPLINK_ROUTER_PASSWORD": "other",
-        "TPLINK_ROUTER_PORT": "8443",
+        "OTHER_DEV_HOST": "192.0.2.1",
+        "OTHER_DEV_PASSWORD": "other",
+        "OTHER_DEV_PORT": "8443",
     }
     nvr = load_device_settings(NVR_PREFIX, env)
-    router = load_device_settings("TPLINK_ROUTER_", env)
+    router = load_device_settings("OTHER_DEV_", env)
     assert (nvr.host, nvr.port) == (DOC_HOST, 443)
     assert (router.host, router.port) == ("192.0.2.1", 8443)
 
@@ -49,12 +51,15 @@ def test_prefixes_are_isolated() -> None:
 def test_host_is_set() -> None:
     assert host_is_set(NVR_PREFIX, nvr_env()) is True
     assert host_is_set(NVR_PREFIX, {}) is False
-    assert host_is_set(NVR_PREFIX, {"TPLINK_NVR_HOST": "   "}) is False
+    assert host_is_set(NVR_PREFIX, {"VIGI_NVR_HOST": "   "}) is False
 
 
-def test_bad_prefix_rejected() -> None:
+@pytest.mark.parametrize("prefix", ["bad_", "NOUNDERSCORE", "_X_", "A__"])
+def test_bad_prefix_rejected(prefix: str) -> None:
     with pytest.raises(ConfigError):
-        load_device_settings("BAD_", {"BAD_HOST": DOC_HOST, "BAD_PASSWORD": "x"})
+        load_device_settings(prefix, {f"{prefix}HOST": DOC_HOST, f"{prefix}PASSWORD": "x"})
+    with pytest.raises(ConfigError):
+        load_global_settings(prefix, {})
 
 
 @pytest.mark.parametrize(
@@ -68,7 +73,7 @@ def test_boolean_parsing(raw: str, expected: bool) -> None:
 
 @pytest.mark.parametrize("raw", ["maybe", "", "2", "tru"])
 def test_bad_boolean_rejected(raw: str) -> None:
-    with pytest.raises(ConfigError, match="TPLINK_NVR_VERIFY_TLS"):
+    with pytest.raises(ConfigError, match="VIGI_NVR_VERIFY_TLS"):
         load(VERIFY_TLS=raw)
 
 
@@ -100,7 +105,7 @@ def test_ipv6_base_url_is_bracketed() -> None:
     ],
 )
 def test_invalid_hosts_rejected(host: str) -> None:
-    with pytest.raises(ConfigError, match="TPLINK_NVR_HOST"):
+    with pytest.raises(ConfigError, match="VIGI_NVR_HOST"):
         load(HOST=host)
 
 
@@ -113,7 +118,7 @@ def test_invalid_ports_rejected(port: str) -> None:
     with pytest.raises(ConfigError):
         load(PORT=port)
     with pytest.raises(ConfigError):
-        load_global_settings({"TPLINK_MCP_PORT": port})
+        load_global_settings(MCP, {"VIGI_MCP_PORT": port})
 
 
 @pytest.mark.parametrize("port", ["1", "443", "65535"])
@@ -128,8 +133,8 @@ def test_invalid_timeout_rejected(timeout: str) -> None:
 
 
 def test_missing_password_fails_fast() -> None:
-    with pytest.raises(ConfigError, match="TPLINK_NVR_PASSWORD"):
-        load_device_settings(NVR_PREFIX, {"TPLINK_NVR_HOST": DOC_HOST})
+    with pytest.raises(ConfigError, match="VIGI_NVR_PASSWORD"):
+        load_device_settings(NVR_PREFIX, {"VIGI_NVR_HOST": DOC_HOST})
 
 
 @pytest.mark.parametrize("password", ["", "x" * 129, "bad\x00pw", "tab\tpw"])
@@ -185,25 +190,25 @@ def test_extra_fields_rejected_on_direct_construction() -> None:
 
 
 def test_global_defaults() -> None:
-    g = load_global_settings({})
+    g = load_global_settings(MCP, {})
     assert (g.mcp_transport, g.mcp_host, g.mcp_port) == ("stdio", "127.0.0.1", 8765)
     assert g.mcp_host_is_loopback is True
 
 
 def test_global_transport_choice() -> None:
     assert (
-        load_global_settings({"TPLINK_MCP_TRANSPORT": "streamable-http"}).mcp_transport
+        load_global_settings(MCP, {"VIGI_MCP_TRANSPORT": "streamable-http"}).mcp_transport
         == "streamable-http"
     )
-    with pytest.raises(ConfigError, match="TPLINK_MCP_TRANSPORT"):
-        load_global_settings({"TPLINK_MCP_TRANSPORT": "sse"})
+    with pytest.raises(ConfigError, match="VIGI_MCP_TRANSPORT"):
+        load_global_settings(MCP, {"VIGI_MCP_TRANSPORT": "sse"})
 
 
 @pytest.mark.parametrize("bind", ["localhost", "not an ip", ""])
 def test_mcp_host_must_be_ip_literal(bind: str) -> None:
     with pytest.raises(ConfigError):
-        load_global_settings({"TPLINK_MCP_HOST": bind})
+        load_global_settings(MCP, {"VIGI_MCP_HOST": bind})
 
 
 def test_non_loopback_bind_is_flagged() -> None:
-    assert load_global_settings({"TPLINK_MCP_HOST": "0.0.0.0"}).mcp_host_is_loopback is False  # noqa: S104
+    assert load_global_settings(MCP, {"VIGI_MCP_HOST": "0.0.0.0"}).mcp_host_is_loopback is False  # noqa: S104

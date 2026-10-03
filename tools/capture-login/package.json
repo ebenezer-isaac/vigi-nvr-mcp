@@ -1,5 +1,5 @@
 {
-  "name": "tplink-local-mcp-capture-login",
+  "name": "vigi-nvr-mcp-capture-login",
   "version": "0.1.0",
   "private": true,
   "description": "Optional one-shot dev utility: capture the VIGI NVR web UI login envelope on a device you own. Not part of the MCP server.",

@@ -64,7 +64,7 @@ CONTENT_ALLOWLIST = frozenset(
     {
         # Public login test vectors for the dummy password "TestPass123"
         # (32-hex MD5 values that the hex32 rule would otherwise flag).
-        "tests/fixtures/vigi_nvr_auth_vectors.json",
+        "tests/fixtures/auth_vectors.json",
     }
 )
 

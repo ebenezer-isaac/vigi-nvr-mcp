@@ -20,15 +20,15 @@ import httpx
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
-from tplink_local_mcp.devices.vigi_nvr import crypto
-from tplink_local_mcp.devices.vigi_nvr.transport import decode_wire, encode_wire
+from vigi_nvr_mcp import crypto
+from vigi_nvr_mcp.transport import decode_wire, encode_wire
 
 DOC_HOST = "192.0.2.10"  # RFC 5737 TEST-NET-1
 TEST_PASSWORD = "TestPass123"
 TEST_NONCE = "abcdefgh"
 FAKE_STOK_1 = "ab" * 16
 FAKE_STOK_2 = "cd" * 16
-NVR_PREFIX = "TPLINK_NVR_"
+NVR_PREFIX = "VIGI_NVR_"
 
 
 @lru_cache(maxsize=1)

@@ -5,7 +5,7 @@
  * Optional dev utility. Not part of the MCP server, not imported by it, not
  * needed to install or test it. Use it once to see exactly what the vendor web
  * UI sends when it logs in, so the server's auth flow can be confirmed against
- * your firmware. For day-to-day checks prefer `tplink-local-mcp --check-auth`.
+ * your firmware. For day-to-day checks prefer `vigi-nvr-mcp --check-auth`.
  *
  * Makes EXACTLY ONE login attempt. Never retries. Writes captures/capture.json
  * and captures/stok.txt (both contain a live session token: do not share them).

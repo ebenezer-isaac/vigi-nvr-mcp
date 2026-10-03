@@ -19,6 +19,4 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e '.[dev]'
-      - run: python scripts/check_no_secrets.py
-      - run: ruff check . && ruff format --check .
-      - run: pytest -q --cov
+      - run: python scripts/gate.py

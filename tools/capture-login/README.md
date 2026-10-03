@@ -17,8 +17,8 @@ administer**.
 For routine checks, use the browser-free CLI instead:
 
 ```sh
-tplink-local-mcp --check-auth --device nvr           # challenge only, no login
-tplink-local-mcp --check-auth --login --device nvr   # plus exactly one login
+vigi-nvr-mcp --check-auth           # challenge only, no login
+vigi-nvr-mcp --check-auth --login   # plus exactly one login
 ```
 
 ## Safety
