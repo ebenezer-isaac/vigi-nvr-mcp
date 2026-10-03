@@ -3,15 +3,19 @@ from __future__ import annotations
 import pytest
 
 from tests.helpers import NVR_PREFIX, nvr_env
-from vigi_nvr_mcp.core import breaker, envelope
+from vigi_nvr_mcp.auth import check_remaining_attempts
+from vigi_nvr_mcp.core import envelope
+from vigi_nvr_mcp.core.breaker import LoginBreaker
 from vigi_nvr_mcp.core.config import load_device_settings
 from vigi_nvr_mcp.core.errors import (
     ApiError,
     AuthFailed,
     LockoutGuard,
+    LoginDisabled,
     PreconditionFailed,
     TokenExpired,
 )
+from vigi_nvr_mcp.core.state import Outcome
 from vigi_nvr_mcp.core.tooling import run_tool
 from vigi_nvr_mcp.core.write_gate import check_write_gate
 from vigi_nvr_mcp.errors import ERROR_CODES, describe_error_code, error_symbol
@@ -134,21 +138,25 @@ def test_write_gate_passes_with_both_keys() -> None:
     assert check_write_gate(_settings(ALLOW_WRITES="true"), "delete", True) is None
 
 
-# ---- lockout helpers ------------------------------------------------------------
+# ---- lockout helpers (reserve/release breaker) --------------------------------
 
 
-def test_ledger_is_immutable_and_rebuilt() -> None:
-    ledger = breaker.LoginLedger()
-    after = breaker.record_failure(ledger, {"x": 1})
-    assert (ledger.failed, after.failed) == (0, 1)
-    assert breaker.record_success(after).successful == 1
+def test_reservation_records_outcomes_and_keeps_failures(tmp_path) -> None:
+    b = LoginBreaker(tmp_path, "dev", max_failures=3)
+    b.reserve_attempt().release(Outcome.FAILURE, failure={"x": 1})
+    assert b.status()["failures"] == 1
+    # A success bumps successes but never clears the sticky failures.
+    b.reserve_attempt().release(Outcome.SUCCESS)
+    assert b.status()["successes"] == 1
+    assert b.status()["failures"] == 1
 
 
-def test_login_disabled_guard_names_variable() -> None:
-    with pytest.raises(LockoutGuard, match="VIGI_NVR_LOGIN_DISABLED"):
-        breaker.check_login_allowed(
-            breaker.LoginLedger(), _settings(LOGIN_DISABLED="true"), explicit=True
-        )
+def test_login_disabled_guard_names_variable(tmp_path) -> None:
+    b = LoginBreaker(
+        tmp_path, "dev", login_disabled=True, disabled_hint="VIGI_NVR_LOGIN_DISABLED=true"
+    )
+    with pytest.raises(LoginDisabled, match="VIGI_NVR_LOGIN_DISABLED"):
+        b.reserve_attempt()
 
 
 @pytest.mark.parametrize(
@@ -166,9 +174,9 @@ def test_login_disabled_guard_names_variable() -> None:
 def test_remaining_attempt_guard(remaining, explicit, refused) -> None:
     if refused:
         with pytest.raises(LockoutGuard):
-            breaker.check_remaining_attempts(remaining, explicit=explicit)
+            check_remaining_attempts(remaining, explicit=explicit)
     else:
-        breaker.check_remaining_attempts(remaining, explicit=explicit)
+        check_remaining_attempts(remaining, explicit=explicit)
 
 
 # ---- run_tool -----------------------------------------------------------------

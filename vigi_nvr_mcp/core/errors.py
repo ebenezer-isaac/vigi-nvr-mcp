@@ -130,11 +130,54 @@ class NonceInvalid(DeviceError):
     kind = "NONCE_INVALID"
 
 
+class StateUnavailable(DeviceError):
+    """A persisted state store could not be used: its directory is unwritable, its
+    cross-process lock could not be taken within the timeout, or the file on disk
+    is unreadable, corrupt, wrongly-typed or of an unknown version. Every such
+    failure is reported here (fail closed) and never coerced or ignored, so no
+    caller ever mistakes an unusable store for an empty/permissive one."""
+
+    kind = "STATE_UNAVAILABLE"
+
+
 class BreakerOpen(DeviceError):
     """The persistent login breaker could not be read or written, or holds an
     open state, so logins are refused (fail closed) until a human clears it."""
 
     kind = "BREAKER_OPEN"
+
+
+class Cooldown(DeviceError):
+    """A login was refused because a device-imposed cooldown is still in effect
+    (e.g. session-busy or a timed lockout). Expires on its own clock; a success
+    clears it. Distinct from a credential failure: the account is not necessarily
+    locked, the device is asking the client to wait."""
+
+    kind = "COOLDOWN"
+
+    def __init__(self, message: str, *, cooldown_remaining_s: float | None = None) -> None:
+        self.cooldown_remaining_s = cooldown_remaining_s
+        super().__init__(message)
+
+    def details(self) -> dict[str, Any]:
+        return {"cooldown_remaining_s": self.cooldown_remaining_s}
+
+
+class LoginDisabled(DeviceError):
+    """Authentication is frozen by configuration (``<PREFIX>_LOGIN_DISABLED``).
+    Freezes login attempts only; the credential-free challenge/reachability probe
+    stays allowed. No network login call is made (fail closed)."""
+
+    kind = "LOGIN_DISABLED"
+
+
+class WriteNotAllowed(DeviceError):
+    """A gated write reached the guarded executor without writes enabled.
+
+    Defense-in-depth: the two-key gate normally refuses before the executor is
+    reached, so this only fires if a mutating path forgets it. Fails closed."""
+
+    kind = "WRITE_NOT_ALLOWED"
 
 
 class LockoutGuard(DeviceError):

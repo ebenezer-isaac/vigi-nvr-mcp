@@ -35,14 +35,13 @@ def test_unknown_global_key_fails_loudly_and_names_it() -> None:
 
 
 def test_unknown_global_key_is_not_silently_dropped() -> None:
-    # Documents the actual behaviour: the typo is ignored and the setting keeps its
-    # default, so the operator's intent ('serve over HTTP') is silently lost.
+    # X1: the typo is NOT silently dropped - the global loader rejects it just like
+    # the device loader (F3 fixed). A valid config still loads unchanged.
     env = {
         f"{MCP_PREFIX}HOST": "127.0.0.1",
         f"{MCP_PREFIX}TRANPORT": "streamable-http",
     }
-    settings = load_global_settings(MCP_PREFIX, env)
-    assert settings.mcp_transport == "stdio", (
-        "sanity: the typo'd key was dropped (default kept) rather than rejected; "
-        "this is the bug F3 reports"
-    )
+    with pytest.raises(ConfigError):
+        load_global_settings(MCP_PREFIX, env)
+    ok = load_global_settings(MCP_PREFIX, {f"{MCP_PREFIX}TRANSPORT": "streamable-http"})
+    assert ok.mcp_transport == "streamable-http"

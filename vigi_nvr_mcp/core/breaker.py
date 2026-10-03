@@ -1,36 +1,74 @@
-"""Login circuit breaker (device-agnostic), persisted across process instances.
+"""Login circuit breaker: a thin policy over :class:`ReservationStore`.
 
-Many embedded devices lock the admin account after a handful of failed logins.
-The breaker decides, before any network I/O, whether a login may be attempted,
-and it must survive restarts: a crash-loop or repeated CLI runs with bad
-credentials would otherwise reset the budget every process and walk the account
-into a hard lockout.
+The breaker holds one fact - *how much of the device's login budget is spent, and
+may this process spend one more attempt right now* - in one authoritative place.
+The admit decision and the budget increment are the **same** locked, atomic write
+(:meth:`LoginBreaker.reserve_attempt`): there is no pure-read admit path, so two
+processes cannot both pass. Taking the store's lock requires writing, so an
+unwritable store is discovered at admit time and refused (never fail-open). The
+ledger is strictly schema-validated, so a wrongly-typed field is refused, never
+coerced to a permissive value. The device identity is derived once by
+:func:`canonical_device_key`, so one device never holds two budgets.
 
-State is a small JSON file under ``<PREFIX>_STATE_DIR`` (default
-``~/.local/state/<app>/``), one file per device host, written atomically
-(tmp + ``os.replace``) with mode 0600 and loaded on every check. If the file is
-unreadable, corrupt, or cannot be written, the breaker is treated as OPEN and a
-``BreakerOpen`` error is raised (fail closed). A human clears it with
-``<script> breaker --clear``.
+Semantics (device-agnostic; no device vocabulary lives here):
+
+* ``reserve_attempt()`` reserves one attempt before any network I/O and returns a
+  :class:`Reservation`. ``release(SUCCESS)`` records a success and clears any
+  cooldown; ``release(FAILURE)`` records a failure and, at/over budget, trips the
+  breaker; ``release(BUSY, cooldown_s=...)`` sets a cooldown without spending
+  budget; ``release(ABORT)`` cancels a reservation whose attempt never reached the
+  device (a pre-send guard refused). An unresolved reservation records a failure.
+* ``tripped`` is sticky: once failures reach the budget it stays set until
+  :meth:`clear`, so raising the budget later never silently reopens it.
+* A success never clears failures (they are sticky until a human clears them); it
+  does clear the cooldown.
+* A crash between reserve and release leaves the reservation counted against the
+  budget until ``breaker --clear`` (fail closed).
 """
 
 from __future__ import annotations
 
-import contextlib
-import json
-import os
+import ipaddress
+import logging
 import re
-from dataclasses import dataclass, replace
+import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
-from .config import DeviceSettings
-from .errors import BreakerOpen, LockoutGuard
+from pydantic import BaseModel, ConfigDict, Field
 
-# Implicit (automatic) logins stop when the device reports this few attempts left.
-IMPLICIT_LOGIN_MIN_REMAINING = 3
+from .errors import BreakerOpen, Cooldown, LoginDisabled, StateUnavailable
+from .state import Outcome, Reservation, ReservationStore
 
-_UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
+log = logging.getLogger(__name__)
+
+SCHEMA_VERSION = 1
+# Upper bound on any cooldown, so a bogus/absurd future value can never make the
+# breaker unrecoverable by time alone (and ``clear`` always recovers it anyway).
+MAX_COOLDOWN_S = 7200.0
+
+_UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _safe(name: str) -> str:
+    """The one filename sanitiser: collapse unsafe runs to ``_``, cap length."""
+    cleaned = _UNSAFE.sub("_", name)[:64]
+    return cleaned or "_"
+
+
+def canonical_device_key(host: str) -> str:
+    """The single source of device identity used for the ledger filename.
+
+    Lower-cases the host; an IP address is reduced to its compressed canonical form
+    so ``fe80::1`` and ``fe80:0:0:0:0:0:0:1`` (and ``Host.local`` vs ``host.local``)
+    map to one key, one ledger, one budget.
+    """
+    h = host.strip().lower()
+    try:
+        return ipaddress.ip_address(h).compressed
+    except ValueError:
+        return h
 
 
 def default_state_dir(app_name: str) -> Path:
@@ -38,164 +76,221 @@ def default_state_dir(app_name: str) -> Path:
     return Path.home() / ".local" / "state" / app_name
 
 
-@dataclass(frozen=True)
-class LoginLedger:
-    failed: int = 0
-    successful: int = 0
-    last_failure: dict[str, Any] | None = None
+class BreakerLedger(BaseModel):
+    """The one authoritative, strictly-typed shape of the breaker's fact."""
 
+    model_config = ConfigDict(strict=True, extra="forbid")
 
-def record_failure(ledger: LoginLedger, failure: dict[str, Any]) -> LoginLedger:
-    return replace(ledger, failed=ledger.failed + 1, last_failure=dict(failure))
-
-
-def record_success(ledger: LoginLedger) -> LoginLedger:
-    return replace(ledger, successful=ledger.successful + 1)
-
-
-def check_login_allowed(ledger: LoginLedger, settings: DeviceSettings, *, explicit: bool) -> None:
-    """Raise LockoutGuard if policy forbids a login attempt right now."""
-    if settings.login_disabled:
-        raise LockoutGuard(
-            f"Login refused: {settings.env_name('LOGIN_DISABLED')}=true. Authentication is frozen."
-        )
-    if ledger.failed >= settings.max_login_failures:
-        raise LockoutGuard(
-            f"Login refused: {ledger.failed} failed login(s) recorded "
-            f"(limit {settings.max_login_failures}, {settings.env_name('MAX_LOGIN_FAILURES')}). "
-            "The breaker is open and persists across restarts: fix the credentials, check the "
-            "device's lockout state, then clear it with the `breaker --clear` command."
-        )
-    if not explicit and ledger.failed > 0:
-        raise LockoutGuard(
-            "Login refused: a previous login failed. Automatic logins are disabled; "
-            "use the explicit login tool after fixing the cause."
-        )
-
-
-def check_remaining_attempts(
-    remaining: int | None,
-    *,
-    explicit: bool,
-    max_attempts: int | None = None,
-    lock_seconds_left: int | None = None,
-) -> None:
-    """Guard on the device-reported remaining-attempts counter (None = unknown)."""
-    if remaining is None:
-        return
-    if remaining <= 0:
-        raise LockoutGuard(
-            "Login refused: the device reports 0 login attempts remaining; the account is "
-            "locked or about to be. Wait for the lock to expire.",
-            attempts_left=remaining,
-            max_attempts=max_attempts,
-            lock_seconds_left=lock_seconds_left,
-        )
-    if not explicit and remaining < IMPLICIT_LOGIN_MIN_REMAINING:
-        raise LockoutGuard(
-            f"Login refused: the device reports only {remaining} attempt(s) remaining. "
-            "Automatic login is suspended; use the explicit login tool if you are sure "
-            "the credentials are correct.",
-            attempts_left=remaining,
-            max_attempts=max_attempts,
-            lock_seconds_left=lock_seconds_left,
-        )
+    version: Literal[1] = SCHEMA_VERSION
+    key: str
+    reserved: int = Field(ge=0)
+    failures: int = Field(ge=0)
+    successes: int = Field(ge=0)
+    tripped: bool
+    cooldown_until: float | None
+    last_failure: dict[str, Any] | None
+    last_update: float
 
 
 class LoginBreaker:
-    """Persistent per-device login breaker. File-backed, fail-closed on I/O error."""
+    """Persistent per-device login breaker. One locked ledger, fail-closed."""
 
-    def __init__(self, state_dir: Path, device: str, settings: DeviceSettings) -> None:
-        self._dir = Path(state_dir)
-        self._device = device
-        self._settings = settings
-        self._path = self._dir / f"breaker-{_UNSAFE.sub('_', device)}.json"
+    def __init__(
+        self,
+        state_dir: Path,
+        device_key: str,
+        *,
+        max_failures: int = 1,
+        clock: Callable[[], float] = time.time,
+        login_disabled: bool = False,
+        disabled_hint: str = "",
+        lock_timeout_s: float = 5.0,
+    ) -> None:
+        self._key = device_key
+        self._max_failures = max(1, int(max_failures))
+        self._clock = clock
+        self._login_disabled = login_disabled
+        self._disabled_hint = disabled_hint
+        self._store: ReservationStore = ReservationStore(
+            Path(state_dir),
+            f"breaker-{_safe(device_key)}",
+            BreakerLedger,
+            make_default=self._fresh,
+            lock_timeout_s=lock_timeout_s,
+        )
 
     @property
     def path(self) -> Path:
-        return self._path
+        return self._store.path
 
-    def _load(self) -> LoginLedger:
-        if not self._path.exists():
-            return LoginLedger()
-        try:
-            data = json.loads(self._path.read_text("utf-8"))
-        except (OSError, ValueError):
-            raise BreakerOpen(
-                "Login breaker state is unreadable or corrupt; refusing logins (fail closed). "
-                "Clear it with the `breaker --clear` command."
-            ) from None
-        if not isinstance(data, dict):
-            raise BreakerOpen(
-                "Login breaker state is malformed; refusing logins (fail closed). "
-                "Clear it with the `breaker --clear` command."
-            )
-        last = data.get("last_failure")
-        return LoginLedger(
-            failed=int(data.get("failed", 0)),
-            successful=int(data.get("successful", 0)),
-            last_failure=last if isinstance(last, dict) else None,
+    @property
+    def login_disabled(self) -> bool:
+        return self._login_disabled
+
+    def _fresh(self) -> BreakerLedger:
+        return BreakerLedger(
+            key=self._key,
+            reserved=0,
+            failures=0,
+            successes=0,
+            tripped=False,
+            cooldown_until=None,
+            last_failure=None,
+            last_update=float(self._clock()),
         )
 
-    def _save(self, ledger: LoginLedger) -> None:
-        payload = {
-            "device": self._device,
-            "failed": ledger.failed,
-            "successful": ledger.successful,
-            "last_failure": ledger.last_failure,
-        }
-        tmp = self._dir / f"{self._path.name}.{os.getpid()}.tmp"
-        try:
-            self._dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-            flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0)
-            fd = os.open(tmp, flags, 0o600)
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(payload, handle, sort_keys=True)
-            os.replace(tmp, self._path)
-        except OSError:
-            with contextlib.suppress(OSError):
-                tmp.unlink(missing_ok=True)
+    def _cooldown_remaining(self, ledger: BreakerLedger) -> float:
+        if ledger.cooldown_until is None:
+            return 0.0
+        return max(0.0, min(MAX_COOLDOWN_S, ledger.cooldown_until - float(self._clock())))
+
+    # ---- admit / resolve policy (run under the store lock) ------------------
+
+    def _admit(self, current: BreakerLedger | None) -> BreakerLedger:
+        ledger = current or self._fresh()
+        if ledger.tripped:
             raise BreakerOpen(
-                "Login breaker state could not be written; refusing logins (fail closed). "
-                f"Check write access to {self._dir}."
-            ) from None
+                f"Login refused: the breaker is tripped ({ledger.failures} failure(s) recorded, "
+                f"budget {self._max_failures}). It persists across restarts and does not reopen "
+                "when the budget is raised; fix the credentials, check the device's lockout "
+                "state, then clear it with the `breaker --clear` command."
+            )
+        remaining = self._cooldown_remaining(ledger)
+        if remaining > 0:
+            raise Cooldown(
+                f"Login refused: a cooldown is in effect for about {remaining:.0f}s more. "
+                "Wait for it to expire or clear the breaker.",
+                cooldown_remaining_s=remaining,
+            )
+        if ledger.reserved + ledger.failures >= self._max_failures:
+            raise BreakerOpen(
+                f"Login refused: the login budget is spent ({ledger.reserved} in flight + "
+                f"{ledger.failures} failed, budget {self._max_failures}). It persists across "
+                "restarts; clear it with the `breaker --clear` command after fixing the cause."
+            )
+        return ledger.model_copy(
+            update={"reserved": ledger.reserved + 1, "last_update": float(self._clock())}
+        )
 
-    def check(self, *, explicit: bool) -> LoginLedger:
-        """Load state and raise if a login is not allowed; return the loaded ledger."""
-        ledger = self._load()
-        check_login_allowed(ledger, self._settings, explicit=explicit)
-        return ledger
+    def _resolve(
+        self, current: BreakerLedger | None, outcome: Outcome, kwargs: dict[str, Any]
+    ) -> BreakerLedger:
+        ledger = current or self._fresh()
+        reserved = max(0, ledger.reserved - 1)
+        failures = ledger.failures
+        successes = ledger.successes
+        tripped = ledger.tripped
+        cooldown_until = ledger.cooldown_until
+        last_failure = ledger.last_failure
+        cooldown_s = kwargs.get("cooldown_s")
+        failure = kwargs.get("failure")
 
-    def record_failure(self, failure: dict[str, Any]) -> LoginLedger:
-        ledger = record_failure(self._load(), failure)
-        self._save(ledger)
-        return ledger
+        if outcome is Outcome.SUCCESS:
+            successes += 1
+            cooldown_until = None  # a success proves the soft-busy condition has passed
+        elif outcome is Outcome.FAILURE:
+            failures += 1
+            tripped = tripped or failures >= self._max_failures
+            if failure is not None:
+                last_failure = dict(failure)
+            if cooldown_s is not None:
+                cooldown_until = self._cooldown_epoch(cooldown_s)
+        elif outcome is Outcome.BUSY:
+            # Soft busy / device-side timeout: a cooldown, not a budget failure.
+            if cooldown_s is not None:
+                cooldown_until = self._cooldown_epoch(cooldown_s)
+        # Outcome.ABORT: the attempt never reached the device; decrement reserved only.
 
-    def record_success(self) -> LoginLedger:
-        ledger = record_success(self._load())
-        self._save(ledger)
-        return ledger
+        return ledger.model_copy(
+            update={
+                "reserved": reserved,
+                "failures": failures,
+                "successes": successes,
+                "tripped": tripped,
+                "cooldown_until": cooldown_until,
+                "last_failure": last_failure,
+                "last_update": float(self._clock()),
+            }
+        )
+
+    def _cooldown_epoch(self, cooldown_s: float) -> float:
+        return float(self._clock()) + max(0.0, min(MAX_COOLDOWN_S, float(cooldown_s)))
+
+    # ---- public API ---------------------------------------------------------
+
+    def reserve_attempt(self) -> Reservation:
+        """Reserve one login attempt before any network I/O (the admission).
+
+        Raises :class:`LoginDisabled` (frozen by config), :class:`BreakerOpen`
+        (tripped, budget spent, or the store is unusable) or :class:`Cooldown`
+        (a cooldown is in effect) - all before any reservation is committed.
+        """
+        if self._login_disabled:
+            hint = f" ({self._disabled_hint})" if self._disabled_hint else ""
+            raise LoginDisabled(f"Login refused: authentication is frozen{hint}.")
+        try:
+            self._store.mutate(self._admit)
+        except StateUnavailable as exc:
+            raise BreakerOpen(
+                f"Login refused: the breaker store is unusable, so the budget cannot be "
+                f"proven. {exc} Refusing logins (fail closed)."
+            ) from exc
+        return Reservation(self._resolver)
+
+    def _resolver(self, outcome: Outcome, kwargs: dict[str, Any]) -> None:
+        def apply(current: BreakerLedger | None) -> BreakerLedger:
+            return self._resolve(current, outcome, kwargs)
+
+        try:
+            self._store.mutate(apply)
+        except StateUnavailable:
+            # The reserved increment is already on disk, so further logins are
+            # refused (fail closed); do not turn a resolved attempt into an error.
+            log.warning(
+                "breaker: could not record a reservation outcome; the reserved attempt "
+                "stays on disk and further logins are refused until the store is writable"
+            )
+
+    def status(self) -> dict[str, Any]:
+        """A non-secret snapshot for ``--show``/healthcheck. Never raises."""
+        try:
+            ledger = self._store.load() or self._fresh()
+        except StateUnavailable as exc:
+            return {"state": "open", "reason": str(exc), "path": str(self.path)}
+        remaining = self._cooldown_remaining(ledger)
+        spent = ledger.reserved + ledger.failures >= self._max_failures
+        if self._login_disabled:
+            state = "disabled"
+        elif ledger.tripped or spent:
+            state = "open"
+        elif remaining > 0:
+            state = "cooldown"
+        else:
+            state = "closed"
+        return {
+            "state": state,
+            "reserved": ledger.reserved,
+            "failures": ledger.failures,
+            "successes": ledger.successes,
+            "tripped": ledger.tripped,
+            "cooldown_remaining_s": round(remaining, 3),
+            "max_failures": self._max_failures,
+            "login_disabled": self._login_disabled,
+            "last_failure": ledger.last_failure,
+            "path": str(self.path),
+        }
 
     def clear(self) -> None:
+        """Reset the breaker (``breaker --clear``). Fail closed on store error."""
         try:
-            self._path.unlink(missing_ok=True)
-        except OSError:
-            raise BreakerOpen(f"Could not clear the breaker file at {self._path}.") from None
+            self._store.clear()
+        except StateUnavailable as exc:
+            raise BreakerOpen(f"Could not clear the breaker: {exc}") from exc
 
-    def show(self) -> dict[str, Any]:
+    @property
+    def cooldown_until(self) -> float | None:
         try:
-            ledger = self._load()
-        except BreakerOpen as exc:
-            return {"state": "open", "reason": str(exc), "path": str(self._path)}
-        is_open = (
-            self._settings.login_disabled or ledger.failed >= self._settings.max_login_failures
-        )
-        return {
-            "state": "open" if is_open else "closed",
-            "failed": ledger.failed,
-            "successful": ledger.successful,
-            "max_login_failures": self._settings.max_login_failures,
-            "login_disabled": self._settings.login_disabled,
-            "last_failure": ledger.last_failure,
-            "path": str(self._path),
-        }
+            ledger = self._store.load()
+        except StateUnavailable:
+            return None
+        return ledger.cooldown_until if ledger else None

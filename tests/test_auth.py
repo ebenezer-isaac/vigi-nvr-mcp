@@ -13,7 +13,9 @@ from vigi_nvr_mcp.auth import Authenticator
 from vigi_nvr_mcp.core.errors import (
     ApiError,
     AuthFailed,
+    BreakerOpen,
     LockoutGuard,
+    LoginDisabled,
     NonceInvalid,
     TokenExpired,
     TransportError,
@@ -140,7 +142,8 @@ async def test_explicit_login_refused_once_budget_spent(make_auth, fake) -> None
         await auth.login()
     before = len(fake.requests)
     for _ in range(5):
-        with pytest.raises(LockoutGuard, match="restart"):
+        # Budget spent -> the breaker is tripped: BreakerOpen, no network I/O at all.
+        with pytest.raises(BreakerOpen, match="restart"):
             await auth.login()
     assert len(fake.requests) == before
     assert auth.status()["failed_logins"] == 1
@@ -152,7 +155,7 @@ async def test_explicit_login_allowed_within_larger_budget(make_auth, fake) -> N
     for _ in range(2):
         with pytest.raises(AuthFailed):
             await auth.login()
-    with pytest.raises(LockoutGuard):
+    with pytest.raises(BreakerOpen):
         await auth.login()
     assert fake.login_attempts == 2
 
@@ -181,7 +184,7 @@ async def test_transport_error_during_login_counts_as_failure(make_settings) -> 
     auth = Authenticator(s, t)
     with pytest.raises(AuthFailed, match="outcome unknown"):
         await auth.login()
-    with pytest.raises(LockoutGuard):
+    with pytest.raises(BreakerOpen):
         await auth.login()
     assert calls["n"] == 1
     await t.aclose()
@@ -191,26 +194,30 @@ async def test_transport_error_during_login_counts_as_failure(make_settings) -> 
 
 
 async def test_nonce_invalid_raises_without_resend(make_auth, fake) -> None:
-    # Decision AL-F5: on -40410 the login is NOT resent inside the same call.
-    # Exactly one login POST; NonceInvalid is raised (retryable), not counted.
+    # Decision AL-F5: on -40410 the login is NOT resent inside the same call -
+    # exactly one login POST. Root-cause spec §3 makes the counting conservative:
+    # the reserved attempt IS spent (release FAILURE), not forgiven.
     fake.nonce_invalid_times = 1
     auth = make_auth()
     with pytest.raises(NonceInvalid):
         await auth.login()
     assert fake.login_attempts == 1
-    assert auth.status()["failed_logins"] == 0
+    assert auth.status()["failed_logins"] == 1
 
 
-async def test_nonce_invalid_is_retryable_not_counted(make_auth, fake) -> None:
-    # A nonce rejection is retryable: once the device stops rejecting the nonce,
-    # the very next explicit login succeeds, and no failure was ever recorded.
+async def test_nonce_invalid_is_counted_conservatively(make_auth, fake) -> None:
+    # Conservative policy (root-cause spec §3): a -40410 is a spent attempt. With the
+    # default budget the breaker trips, so the next explicit login is refused with no
+    # second POST - the one-POST-per-call guarantee holds across the whole sequence.
     fake.nonce_invalid_times = 1
     auth = make_auth()
     with pytest.raises(NonceInvalid):
         await auth.login()
-    assert await auth.login() == FAKE_STOK_1
-    assert fake.login_attempts == 2  # one per explicit call, never two in one
-    assert auth.status()["failed_logins"] == 0
+    assert fake.login_attempts == 1
+    with pytest.raises(BreakerOpen):
+        await auth.login()
+    assert fake.login_attempts == 1  # the breaker blocked the retry before any POST
+    assert auth.status()["failed_logins"] == 1
 
 
 # ---- (6) LOGIN_DISABLED -----------------------------------------------------
@@ -218,9 +225,9 @@ async def test_nonce_invalid_is_retryable_not_counted(make_auth, fake) -> None:
 
 async def test_login_disabled_makes_zero_requests(make_auth, fake) -> None:
     auth = make_auth(LOGIN_DISABLED="true")
-    with pytest.raises(LockoutGuard, match="VIGI_NVR_LOGIN_DISABLED"):
+    with pytest.raises(LoginDisabled, match="VIGI_NVR_LOGIN_DISABLED"):
         await auth.login()
-    with pytest.raises(LockoutGuard):
+    with pytest.raises(LoginDisabled):
         await auth.token()
     assert fake.requests == []
     assert auth.status()["login_disabled"] is True

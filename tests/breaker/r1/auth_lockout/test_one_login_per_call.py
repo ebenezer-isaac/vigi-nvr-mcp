@@ -38,5 +38,6 @@ async def test_single_explicit_login_sends_at_most_one_login_post(
     assert fake.login_attempts == 1, (
         f"one explicit login() issued {fake.login_attempts} login POSTs"
     )
-    # A nonce rejection is retryable, so it is not counted as a credential failure.
-    assert auth.status()["failed_logins"] == 0
+    # Root-cause spec §3: the reserved attempt is spent conservatively (counted),
+    # since the firmware is not proven to ignore a nonce-rejected POST.
+    assert auth.status()["failed_logins"] == 1

@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import logging
 import os
 import sys
@@ -28,9 +27,11 @@ from dotenv import load_dotenv
 from .auth import APP_NAME
 from .backend import ENV_PREFIX, NvrBackend
 from .core import breaker as breaker_mod
+from .core.breaker import canonical_device_key
 from .core.cli import configure_logging, emit_envelope, emit_lines
+from .core.cli import run_breaker as _run_breaker
 from .core.config import DeviceSettings, load_device_settings, load_global_settings
-from .core.errors import ConfigError
+from .core.errors import ConfigError, DeviceError
 from .server import MCP_ENV_PREFIX, build_server
 
 log = logging.getLogger("vigi_nvr_mcp")
@@ -86,18 +87,27 @@ def _breaker_for(environ: Mapping[str, str]) -> breaker_mod.LoginBreaker:
     state_dir = (
         Path(settings.state_dir) if settings.state_dir else breaker_mod.default_state_dir(APP_NAME)
     )
-    return breaker_mod.LoginBreaker(state_dir, settings.host, settings)
+    return breaker_mod.LoginBreaker(
+        state_dir,
+        canonical_device_key(settings.host),
+        max_failures=settings.max_login_failures,
+        login_disabled=settings.login_disabled,
+        disabled_hint=f"{settings.env_name('LOGIN_DISABLED')}=true",
+    )
 
 
 def run_breaker(action: str, environ: Mapping[str, str]) -> int:
-    """``breaker --show|--clear``: inspect or clear the persistent login breaker."""
+    """``breaker --show|--clear``: inspect or clear the persistent login breaker.
+
+    ``--show`` never crashes (exit 0 even on a corrupt state file); ``--clear`` maps
+    a store failure to the breaker exit code (3).
+    """
     breaker = _breaker_for(environ)
-    if action == "clear":
-        breaker.clear()
-        print(f"Login breaker cleared ({breaker.path}).")
-        return 0
-    print(json.dumps(breaker.show(), indent=2, sort_keys=True))
-    return 0
+    try:
+        return _run_breaker(breaker, action)
+    except DeviceError as exc:
+        print(f"breaker error: {exc}", file=sys.stderr)
+        return 3
 
 
 def serve(environ: Mapping[str, str]) -> None:

@@ -7,7 +7,7 @@ import logging
 import os
 import sys
 from collections.abc import Mapping
-from typing import Any, TextIO
+from typing import Any, Protocol, TextIO
 
 
 def configure_logging(level_var: str, environ: Mapping[str, str] | None = None) -> None:
@@ -22,16 +22,47 @@ def configure_logging(level_var: str, environ: Mapping[str, str] | None = None) 
 
 
 # Exit codes let a shell script branch on the kind of failure, not just pass/fail:
-#   0 success · 1 auth failed · 2 config error · 3 lockout/breaker/login disabled ·
-#   4 transport · 1 anything else.
+#   0 success · 1 auth failed · 2 config error · 3 lockout/breaker/cooldown/login
+#   disabled/state unavailable · 4 transport · 1 anything else.
 _EXIT_BY_CODE: dict[str, int] = {
     "AUTH_FAILED": 1,
     "CONFIG_ERROR": 2,
     "LOGIN_REFUSED": 3,
     "BREAKER_OPEN": 3,
+    "COOLDOWN": 3,
+    "LOGIN_DISABLED": 3,
+    "STATE_UNAVAILABLE": 3,
     "TRANSPORT_ERROR": 4,
     "TLS_PIN_MISMATCH": 4,
 }
+
+
+class _BreakerLike(Protocol):
+    def status(self) -> dict[str, Any]:
+        """Return a non-secret snapshot; must never raise."""
+
+    def clear(self) -> None:
+        """Reset the breaker."""
+
+    @property
+    def path(self) -> Any:
+        """The ledger file path."""
+
+
+def run_breaker(breaker: _BreakerLike, action: str, stream: TextIO | None = None) -> int:
+    """``breaker --show|--clear`` shared across device CLIs.
+
+    ``--show`` prints ``status()`` as sorted JSON and exits 0 even on a corrupt or
+    unreadable state file (``status()`` never raises); ``--clear`` clears it and
+    exits 0. Reading the breaker is never itself a failure.
+    """
+    out = stream or sys.stdout
+    if action == "clear":
+        breaker.clear()
+        print(f"Login breaker cleared ({breaker.path}).", file=out)
+        return 0
+    print(json.dumps(breaker.status(), indent=2, sort_keys=True), file=out)
+    return 0
 
 
 def emit_envelope(result: dict[str, Any], stream: TextIO | None = None) -> int:

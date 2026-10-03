@@ -25,6 +25,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from ..core.errors import DeviceError, InvalidInput, ProtocolError
+from ..core.state import Outcome
 from ..core.write_gate import check_write_gate
 from ..investigate.sheets import reencode_params, reencode_tail
 from ..media import DEFAULT_BITRATE_BPS
@@ -251,16 +252,25 @@ async def export_clip(
             request["reencode"] = reencode_params(duration_s, target_max_mb, max_width)
 
         async def do_export() -> dict[str, Any]:
-            url = replay_url(ctx.settings, ch, st, start_utc, end_utc)
-            bitrate = await _estimate_bitrate(ctx, ch)
-            result = await runner.export_clip(
-                ch, st, start_utc, end_utc, url, duration_s, bitrate_bps=bitrate
-            )
-            if reencode:
-                result = await _transcode_to_target(
-                    runner, result, duration_s, target_max_mb, max_width
+            # One export in flight per device (cross-process, crash-visible): a
+            # second concurrent export is refused rather than racing for the file.
+            reservation = ctx.export_serial.reserve()
+            try:
+                url = replay_url(ctx.settings, ch, st, start_utc, end_utc)
+                bitrate = await _estimate_bitrate(ctx, ch)
+                result = await runner.export_clip(
+                    ch, st, start_utc, end_utc, url, duration_s, bitrate_bps=bitrate
                 )
-            return result
+                if reencode:
+                    result = await _transcode_to_target(
+                        runner, result, duration_s, target_max_mb, max_width
+                    )
+                reservation.release(Outcome.SUCCESS)
+                return result
+            except BaseException:
+                if not reservation.resolved:
+                    reservation.release(Outcome.FAILURE)
+                raise
 
         # Dry-run and serialisation are decided only by the guarded writer.
         return await ctx.writes.run(request, do_export)
