@@ -101,24 +101,26 @@ def test_nearest_always_returns_up_to_n_even_when_dissimilar(catalog: Catalog) -
 
 
 def test_build_body_wraps_method_and_module(catalog: Catalog) -> None:
+    # CI-F1 fix: a get call wraps its key under the firmware's addressing shape.
+    # chm/get/channel is a name-list get, so the key names the section read.
     spec = catalog.find("chm", "get", "channel")
     body = catalog.build_body(spec, {"display": "x"})
-    assert body == {"method": "get", "chm": {"display": "x"}}
+    assert body == {"method": "get", "chm": {"name": ["channel"], "display": "x"}}
     assert json.loads(json.dumps(body))["method"] == "get"
 
 
 def test_build_body_none_params(catalog: Catalog) -> None:
     spec = catalog.find("chm", "get", "channel")
-    assert catalog.build_body(spec, None) == {"method": "get", "chm": None}
+    assert catalog.build_body(spec, None) == {"method": "get", "chm": {"name": ["channel"]}}
 
 
 def test_build_body_rejects_unknown_top_level_keys_unless_allowed(catalog: Catalog) -> None:
     spec = catalog.find("chm", "get", "channel")  # has a params_example shape
     with pytest.raises(ValueError, match="unknown parameter"):
         catalog.build_body(spec, {"not_a_real_field": 1})
-    # allow_extra bypasses the shape check
+    # allow_extra bypasses the inner-field check; the name wrapper is still built.
     body = catalog.build_body(spec, {"not_a_real_field": 1}, allow_extra=True)
-    assert body == {"method": "get", "chm": {"not_a_real_field": 1}}
+    assert body == {"method": "get", "chm": {"name": ["channel"], "not_a_real_field": 1}}
 
 
 def test_specs_without_example_accept_any_keys(catalog: Catalog) -> None:
@@ -187,7 +189,11 @@ def test_rejects_non_json_value(catalog: Catalog) -> None:
 def test_accepts_nested_within_limits(catalog: Catalog) -> None:
     spec = catalog.find("chm", "get", "channel")
     ok_params = {"a": {"b": {"c": ["x", 1, True, None, 1.5]}}}
-    assert catalog.build_body(spec, ok_params, allow_extra=True)["chm"] == ok_params
+    # name-list get: the nested params merge alongside the name wrapper.
+    assert catalog.build_body(spec, ok_params, allow_extra=True)["chm"] == {
+        "name": ["channel"],
+        **ok_params,
+    }
 
 
 # ---- fuzz: every build_body output is valid JSON carrying "method" -----------

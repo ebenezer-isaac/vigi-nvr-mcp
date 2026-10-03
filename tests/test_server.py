@@ -161,7 +161,8 @@ async def test_nvr_call_read_end_to_end_via_mcp(fake) -> None:
     mcp, _ = _build(fake)
     result = await _call(mcp, "nvr_call", {"module": "chm", "method": "get", "key": "channel"})
     assert result["success"] is True
-    assert fake.api_requests[-1][1] == {"method": "get", "chm": None}
+    # CI-F1 fix: chm/get/channel is a name-list get -> {"name": ["channel"]} on the wire.
+    assert fake.api_requests[-1][1] == {"method": "get", "chm": {"name": ["channel"]}}
 
 
 # ---- check-auth -----------------------------------------------------------------

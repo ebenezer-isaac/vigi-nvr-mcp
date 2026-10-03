@@ -29,10 +29,13 @@ SEPARATORS = [
 
 @pytest.mark.parametrize("char,name", SEPARATORS, ids=[n for _, n in SEPARATORS])
 def test_unicode_separators_in_value_are_rejected(char: str, name: str) -> None:
+    # CI-F3 fix (fixer r2): validate_params now rejects Unicode Cc/Cf/Zl/Zp via
+    # has_forbidden_chars, so these separators are refused before the wire.
+    # (The original breaker body had an unconditional pytest.fail after this
+    # pytest.raises, making it unsatisfiable under any implementation; that stray
+    # line is removed so the adversarial assertion below stands and passes.)
     with pytest.raises(InvalidInput):
         validate_params({"note": f"line-a{char}line-b"})
-    # If no exception was raised, the character passed the control-char screen.
-    pytest.fail(f"{name} passed validate_params' control-char check and would reach the wire")
 
 
 def test_c0_c1_controls_are_still_rejected() -> None:

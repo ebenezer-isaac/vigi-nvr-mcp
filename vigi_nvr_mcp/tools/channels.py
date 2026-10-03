@@ -21,7 +21,6 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from .. import client as client_module
-from ..core.envelope import fail
 from ..core.errors import InvalidInput, NotFound, PreconditionFailed
 from ..core.redact import redact
 from ..core.write_gate import check_write_gate
@@ -170,37 +169,39 @@ async def remove_channel(
     confirm_write: bool = False,
     force: bool = False,
 ) -> dict[str, Any]:
-    try:
-        cid, uuid = validate_channel_id(channel_id), validate_uuid(expected_uuid)
-    except ValueError as exc:
-        return fail("INVALID_INPUT", str(exc))
     method, module, action_name = client_module.CHANNEL_DELETE
     refusal = check_write_gate(ctx.settings, method, confirm_write)
     if refusal is not None:
         return refusal
-    request = {"method": method, module: {action_name: {"ids": [cid]}}}
 
     async def action() -> dict[str, Any]:
-        before = _require_uuid(_find(await ctx.client.list_channels(), cid), cid, uuid)
-        if not force and str(before.get("online", "")) == "1":
-            raise ChannelOnline(
-                f"Channel '{cid}' is online (a live camera). Refusing to unbind it without "
-                "force=true; confirm it is really a ghost, or pass force=true to override.",
-                reason="CHANNEL_ONLINE",
-                context={"channel_id": cid, "online": str(before.get("online", ""))},
-            )
-        response = await ctx.client.delete_channels([cid])
-        after = _find(await ctx.client.list_channels(), cid)
-        return {
-            "dry_run": False,
-            "request": request,
-            "response": response,
-            "before": _public(before),
-            "after": _public(after),
-            "removed": after is None or str(after.get("uuid", "")) != uuid,
-        }
+        # Validate inside run_tool so an InvalidInput maps there (single mapper).
+        cid, uuid = validate_channel_id(channel_id), validate_uuid(expected_uuid)
+        request = {"method": method, module: {action_name: {"ids": [cid]}}}
 
-    return await run_tool("nvr_remove_channel", lambda: ctx.writes.run(request, action))
+        async def write() -> dict[str, Any]:
+            before = _require_uuid(_find(await ctx.client.list_channels(), cid), cid, uuid)
+            if not force and str(before.get("online", "")) == "1":
+                raise ChannelOnline(
+                    f"Channel '{cid}' is online (a live camera). Refusing to unbind it without "
+                    "force=true; confirm it is really a ghost, or pass force=true to override.",
+                    reason="CHANNEL_ONLINE",
+                    context={"channel_id": cid, "online": str(before.get("online", ""))},
+                )
+            response = await ctx.client.delete_channels([cid])
+            after = _find(await ctx.client.list_channels(), cid)
+            return {
+                "dry_run": False,
+                "request": request,
+                "response": response,
+                "before": _public(before),
+                "after": _public(after),
+                "removed": after is None or str(after.get("uuid", "")) != uuid,
+            }
+
+        return await ctx.writes.run(request, write)
+
+    return await run_tool("nvr_remove_channel", action)
 
 
 async def move_channel(
@@ -210,49 +211,51 @@ async def move_channel(
     expected_uuid: str,
     confirm_write: bool = False,
 ) -> dict[str, Any]:
-    try:
-        src, dst = validate_channel_id(old_id), validate_channel_id(new_id)
-        uuid = validate_uuid(expected_uuid)
-    except ValueError as exc:
-        return fail("INVALID_INPUT", str(exc))
-    if src == dst:
-        return fail("INVALID_INPUT", "old_id and new_id must differ")
     method, module, action_name = client_module.CHANNEL_MOVE
     refusal = check_write_gate(ctx.settings, method, confirm_write)
     if refusal is not None:
         return refusal
-    request = {"method": method, module: {action_name: {"old_id": src, "new_id": dst}}}
 
     async def action() -> dict[str, Any]:
-        rows = await ctx.client.list_channels()
-        source = _require_uuid(_find(rows, src), src, uuid)
-        occupant = _find(rows, dst)
-        if occupant is not None:
-            raise PreconditionFailed(
-                f"Target channel '{dst}' is occupied. The firmware would replace its binding; "
-                "remove it first (nvr_remove_channel) and retry.",
-                reason="TARGET_OCCUPIED",
-                context={"new_id": dst, "occupant": _public(occupant)},
-            )
-        before = {"source": _public(source), "target": None}
-        response = await ctx.client.move_channel(src, dst)
-        after_rows = await ctx.client.list_channels()
-        after = {
-            "source": _public(_find(after_rows, src)),
-            "target": _public(_find(after_rows, dst)),
-        }
-        target = after["target"]
-        moved = target is not None and str(target.get("uuid", "")) == uuid
-        return {
-            "dry_run": False,
-            "request": request,
-            "response": response,
-            "before": before,
-            "after": after,
-            "moved": moved,
-        }
+        # Validate inside run_tool so an InvalidInput maps there (single mapper).
+        src, dst = validate_channel_id(old_id), validate_channel_id(new_id)
+        uuid = validate_uuid(expected_uuid)
+        if src == dst:
+            raise InvalidInput("old_id and new_id must differ")
+        request = {"method": method, module: {action_name: {"old_id": src, "new_id": dst}}}
 
-    return await run_tool("nvr_move_channel", lambda: ctx.writes.run(request, action))
+        async def write() -> dict[str, Any]:
+            rows = await ctx.client.list_channels()
+            source = _require_uuid(_find(rows, src), src, uuid)
+            occupant = _find(rows, dst)
+            if occupant is not None:
+                raise PreconditionFailed(
+                    f"Target channel '{dst}' is occupied. The firmware would replace its binding; "
+                    "remove it first (nvr_remove_channel) and retry.",
+                    reason="TARGET_OCCUPIED",
+                    context={"new_id": dst, "occupant": _public(occupant)},
+                )
+            before = {"source": _public(source), "target": None}
+            response = await ctx.client.move_channel(src, dst)
+            after_rows = await ctx.client.list_channels()
+            after = {
+                "source": _public(_find(after_rows, src)),
+                "target": _public(_find(after_rows, dst)),
+            }
+            target = after["target"]
+            moved = target is not None and str(target.get("uuid", "")) == uuid
+            return {
+                "dry_run": False,
+                "request": request,
+                "response": response,
+                "before": before,
+                "after": after,
+                "moved": moved,
+            }
+
+        return await ctx.writes.run(request, write)
+
+    return await run_tool("nvr_move_channel", action)
 
 
 def register(mcp: FastMCP, ctx: ToolContext) -> list[str]:

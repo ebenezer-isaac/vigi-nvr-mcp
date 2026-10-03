@@ -90,7 +90,11 @@ async def test_nvr_call_get_sends_exact_body(ctx, fake) -> None:
     fake.api_handler = _ok_handler
     result = await raw.nvr_call(ctx, "chm", "get", "channel", {"display": "x"})
     assert result["success"] is True
-    assert fake.api_requests[-1][1] == {"method": "get", "chm": {"display": "x"}}
+    # CI-F1 fix: the name-list get wraps the key; display merges alongside it.
+    assert fake.api_requests[-1][1] == {
+        "method": "get",
+        "chm": {"name": ["channel"], "display": "x"},
+    }
 
 
 async def test_nvr_call_unknown_combo_offers_three_nearest(ctx, fake) -> None:
@@ -156,7 +160,11 @@ async def test_nvr_call_dry_run_returns_body_without_sending(dctx, fake) -> None
         dctx, spec.module, spec.method, spec.key, {"a": 1}, confirm_write=True, allow_extra=True
     )
     assert result["data"]["dry_run"] is True
-    assert result["data"]["request"] == {"method": spec.method, spec.module: {"a": 1}}
+    # CI-F1 fix: an action (do/set/add/delete) call nests its params under the key.
+    assert result["data"]["request"] == {
+        "method": spec.method,
+        spec.module: {spec.key: {"a": 1}},
+    }
     assert fake.requests == []
 
 

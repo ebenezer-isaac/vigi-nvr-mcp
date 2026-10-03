@@ -65,20 +65,24 @@ async def nvr_call(
             "nvr_raw_call to send an off-catalog request.",
             {"nearest": cat.nearest(module, method, key)},
         )
-    try:
-        body = cat.build_body(spec, params, allow_extra=allow_extra)
-    except ValueError as exc:
-        return fail("INVALID_INPUT", str(exc))
-
-    def action() -> Any:
-        return ctx.client.call(method, module, params)
-
     mutating = spec.mutates or method != "get"
     if mutating:
         refusal = check_write_gate(ctx.settings, method, confirm_write, read_methods=_FORCE_GATE)
         if refusal is not None:
             return refusal
-        return await run_tool("nvr_call", lambda: ctx.writes.run(body, action))
+
+    async def action() -> Any:
+        # Build the exact wire body (shape-aware) here so a validation error maps
+        # through run_tool as INVALID_INPUT, never a raw codec/ValueError leak.
+        body = cat.build_body(spec, params, allow_extra=allow_extra)
+
+        async def send() -> Any:
+            return await ctx.client.call(method, module, body[module])
+
+        if mutating:
+            return await ctx.writes.run(body, send)
+        return await send()
+
     return await run_tool("nvr_call", action)
 
 
@@ -89,25 +93,29 @@ async def nvr_raw_call(
     params: dict[str, Any] | None = None,
     confirm_write: bool = False,
 ) -> dict[str, Any]:
-    try:
-        validate_call(method, module, params)
-    except ValueError as exc:
-        return fail("INVALID_INPUT", str(exc))
     denied = _denied(module)
     if denied is not None:
         return denied
-    refusal = check_write_gate(ctx.settings, method, confirm_write)
-    if refusal is not None:
-        return refusal
+    gated = method != "get"
+    if gated:
+        refusal = check_write_gate(ctx.settings, method, confirm_write)
+        if refusal is not None:
+            return refusal
     log.warning("nvr_raw_call bypassing the catalog: method=%s module=%s", method, module)
 
-    def action() -> Any:
-        return ctx.client.call(method, module, params)
+    async def action() -> Any:
+        # Validate inside run_tool so an InvalidInput maps cleanly and any other
+        # error (e.g. an internal fault) never surfaces as INVALID_INPUT.
+        validate_call(method, module, params)
 
-    if method == "get":
-        return await run_tool("nvr_raw_call", action)
-    request = {"method": method, module: params}
-    return await run_tool("nvr_raw_call", lambda: ctx.writes.run(request, action))
+        async def send() -> Any:
+            return await ctx.client.call(method, module, params)
+
+        if gated:
+            return await ctx.writes.run({"method": method, module: params}, send)
+        return await send()
+
+    return await run_tool("nvr_raw_call", action)
 
 
 def register(mcp: FastMCP, ctx: ToolContext) -> list[str]:
