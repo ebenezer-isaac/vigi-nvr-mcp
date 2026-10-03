@@ -38,7 +38,10 @@ RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "mac_address",
         re.compile(
-            r"(?<![0-9A-Fa-f:-])(?:[0-9A-Fa-f]{2}([:-]))(?:[0-9A-Fa-f]{2}\1){4}"
+            # The RFC 7042 documentation range 00:00:5E:00:53:xx is a placeholder
+            # (what sanitize_catalog.py rewrites to), so exempt it like 192.0.2.x.
+            r"(?<![0-9A-Fa-f:-])(?!00[:-]00[:-]5[eE][:-]00[:-]53[:-])"
+            r"(?:[0-9A-Fa-f]{2}([:-]))(?:[0-9A-Fa-f]{2}\1){4}"
             r"[0-9A-Fa-f]{2}(?![0-9A-Fa-f:-])"
         ),
     ),

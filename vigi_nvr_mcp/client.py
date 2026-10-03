@@ -20,7 +20,7 @@ from .core.config import DeviceSettings
 from .core.errors import TokenExpired
 from .transport import NvrTransport
 
-METHODS = frozenset({"get", "set", "do", "add", "delete"})
+METHODS = frozenset({"get", "set", "do", "add", "delete", "forward"})
 MODULE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
 MAX_PARAM_BYTES = 64 * 1024
 

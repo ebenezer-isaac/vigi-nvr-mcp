@@ -18,6 +18,7 @@ from ..core.errors import DeviceError
 from ..tools import (
     ToolContext,
     backup,
+    catalog,
     channels,
     detection,
     device,
@@ -30,7 +31,7 @@ from ..tools import (
 from ..transport import NvrTransport
 
 ENV_PREFIX = "VIGI_NVR_"
-TOOL_MODULES = (device, raw, channels, storage, backup, media, detection, events, system)
+TOOL_MODULES = (device, raw, catalog, channels, storage, backup, media, detection, events, system)
 
 
 class NvrBackend:
