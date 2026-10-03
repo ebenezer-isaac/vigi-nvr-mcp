@@ -22,6 +22,10 @@ PACKAGE = Path(__file__).resolve().parent.parent / "vigi_nvr_mcp"
 EXPECTED_TOOLS = {
     "nvr_status",
     "nvr_call",
+    "nvr_raw_call",
+    "nvr_list_modules",
+    "nvr_list_calls",
+    "nvr_describe_call",
     "nvr_login",
     "nvr_auth_status",
     "nvr_get_device_info",
@@ -122,9 +126,30 @@ async def test_status_reports_unreachable_nvr() -> None:
 
 async def test_write_refused_end_to_end_via_mcp(fake) -> None:
     mcp, _ = _build(fake)
-    result = await _call(mcp, "nvr_call", {"method": "set", "module": "system", "params": {}})
+    result = await _call(mcp, "nvr_raw_call", {"method": "set", "module": "system", "params": {}})
     assert result["error"]["code"] == "WRITE_REFUSED"
     assert fake.requests == []
+
+
+async def test_catalog_tools_end_to_end_via_mcp(fake) -> None:
+    mcp, _ = _build(fake)
+    mods = await _call(mcp, "nvr_list_modules")
+    assert mods["data"]["module_count"] == 61
+    calls = await _call(mcp, "nvr_list_calls", {"module": "chm"})
+    assert calls["success"] is True and calls["data"]["calls"]
+    desc = await _call(
+        mcp, "nvr_describe_call", {"module": "chm", "method": "get", "key": "channel"}
+    )
+    assert desc["data"]["mutates"] is False
+    assert fake.requests == []  # all served from the vendored catalog, no device I/O
+
+
+async def test_nvr_call_read_end_to_end_via_mcp(fake) -> None:
+    fake.api_handler = lambda t, b: {"error_code": 0}
+    mcp, _ = _build(fake)
+    result = await _call(mcp, "nvr_call", {"module": "chm", "method": "get", "key": "channel"})
+    assert result["success"] is True
+    assert fake.api_requests[-1][1] == {"method": "get", "chm": None}
 
 
 # ---- check-auth -----------------------------------------------------------------

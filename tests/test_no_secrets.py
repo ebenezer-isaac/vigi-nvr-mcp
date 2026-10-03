@@ -60,6 +60,8 @@ def test_each_leak_pattern_is_detected(name: str) -> None:
         f"public {_ip(8, 8, 8, 8)}",
         f"not private {_ip(172, 32, 0, 1)}",
         f"not private {_ip(172, 15, 0, 1)}",
+        "doc mac " + ":".join(["00", "00", "5E", "00", "53", "2a"]),
+        "doc mac dash " + "-".join(["00", "00", "5e", "00", "53", "FF"]),
         "POST https://<nvr-host>/st" + "ok=<token>/ds",
         'url = f"/st' + 'ok={token}/ds"',
         "VIGI_NVR_PASS" + "WORD=<your-nvr-password>",

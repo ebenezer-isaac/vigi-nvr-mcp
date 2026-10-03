@@ -90,11 +90,11 @@ def _assert_envelope(result: dict[str, Any]) -> None:
         assert set(result["error"]) == {"code", "message", "details"}
 
 
-# ---- raw write gating -------------------------------------------------------
+# ---- raw (off-catalog) write gating -----------------------------------------
 
 
 async def test_get_passes_without_flags(ctx, fake) -> None:
-    result = await raw.nvr_call(ctx, "get", "device_info", {"name": ["basic_info"]})
+    result = await raw.nvr_raw_call(ctx, "get", "device_info", {"name": ["basic_info"]})
     _assert_envelope(result)
     assert result["success"] is True
 
@@ -102,7 +102,7 @@ async def test_get_passes_without_flags(ctx, fake) -> None:
 @pytest.mark.parametrize("method", ["set", "do", "add", "delete"])
 @pytest.mark.parametrize("confirm", [False, True])
 async def test_writes_refused_when_server_disallows(ctx, fake, method, confirm) -> None:
-    result = await raw.nvr_call(ctx, method, "system", {"x": 1}, confirm_write=confirm)
+    result = await raw.nvr_raw_call(ctx, method, "system", {"x": 1}, confirm_write=confirm)
     assert result["error"]["code"] == "WRITE_REFUSED"
     assert "VIGI_NVR_ALLOW_WRITES" in result["error"]["message"]
     assert fake.requests == []
@@ -110,19 +110,19 @@ async def test_writes_refused_when_server_disallows(ctx, fake, method, confirm) 
 
 @pytest.mark.parametrize("method", ["set", "do", "add", "delete"])
 async def test_writes_need_confirm_even_when_allowed(wctx, fake, method) -> None:
-    result = await raw.nvr_call(wctx, method, "system", {"x": 1})
+    result = await raw.nvr_raw_call(wctx, method, "system", {"x": 1})
     assert result["error"]["code"] == "WRITE_REFUSED"
     assert "confirm_write" in result["error"]["message"]
     assert fake.requests == []
 
 
 async def test_confirm_write_must_be_true_not_truthy(wctx, fake) -> None:
-    result = await raw.nvr_call(wctx, "set", "system", {}, confirm_write="yes")  # type: ignore[arg-type]
+    result = await raw.nvr_raw_call(wctx, "set", "system", {}, confirm_write="yes")  # type: ignore[arg-type]
     assert result["error"]["code"] == "WRITE_REFUSED"
 
 
 async def test_write_allowed_with_both_flags(wctx, fake) -> None:
-    result = await raw.nvr_call(wctx, "set", "system", {"x": 1}, confirm_write=True)
+    result = await raw.nvr_raw_call(wctx, "set", "system", {"x": 1}, confirm_write=True)
     assert result["success"] is True
     assert fake.api_requests[-1][1] == {"method": "set", "system": {"x": 1}}
 
@@ -130,19 +130,20 @@ async def test_write_allowed_with_both_flags(wctx, fake) -> None:
 @pytest.mark.parametrize("module", ["login", "user_management", "LOGIN"])
 async def test_auth_modules_are_always_denied(wctx, fake, module) -> None:
     for method in ("get", "do"):
-        result = await raw.nvr_call(wctx, method, module, None, confirm_write=True)
+        result = await raw.nvr_raw_call(wctx, method, module, None, confirm_write=True)
         assert result["error"]["code"] == "MODULE_DENIED"
     assert fake.requests == []
 
 
 async def test_invalid_raw_input_is_rejected(ctx, fake) -> None:
-    assert (await raw.nvr_call(ctx, "get", "bad/module", None))["error"]["code"] == "INVALID_INPUT"
+    bad = await raw.nvr_raw_call(ctx, "get", "bad/module", None)
+    assert bad["error"]["code"] == "INVALID_INPUT"
     assert fake.requests == []
 
 
 async def test_raw_reply_is_redacted(ctx, fake) -> None:
     fake.api_handler = lambda t, b: {"error_code": 0, "x": {"stok": "s", "password": "p"}}
-    result = await raw.nvr_call(ctx, "get", "x", {})
+    result = await raw.nvr_raw_call(ctx, "get", "x", {})
     assert result["data"]["x"] == {"stok": REDACTED, "password": REDACTED}
 
 
