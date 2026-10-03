@@ -17,6 +17,7 @@ import json
 import logging
 import re
 import shutil
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -316,3 +317,57 @@ class FfmpegRunner:
         output = directory / name
         cmd = [*ffmpeg, *snapshot_tail(url, str(output), SNAPSHOT_TIMEOUT_S)]
         return await self._run_job(url, output, cmd, SNAPSHOT_TIMEOUT_S, verify=False)
+
+    async def run_to_file(
+        self,
+        url: str,
+        output: Path,
+        tail: list[str],
+        timeout_s: float,
+        *,
+        verify: bool = False,
+    ) -> dict[str, object]:
+        """Run one ffmpeg job (argv ``tail`` after the binary) producing ``output``.
+
+        Reuses all the export guards (serial lock, timeout/kill, no-footage
+        detection, optional ffprobe verify, credential scrubbing). ``url`` is only
+        used to scrub credentials from the stderr tail; pass ``""`` for a local
+        transcode whose argv carries no credentials.
+        """
+        ffmpeg, _ = self._commands()
+        self._export_dir()
+        cmd = [*ffmpeg, *tail]
+        return await self._run_job(url, output, cmd, timeout_s, verify=verify)
+
+    async def run_multi(
+        self,
+        url: str,
+        tail: list[str],
+        timeout_s: float,
+        collect: Callable[[], list[Path]],
+    ) -> tuple[list[Path], str]:
+        """Run one ffmpeg job that writes several files; ``collect`` returns them.
+
+        Used for sampled frames (a numbered output pattern). Applies the same
+        serial lock, timeout/kill, no-footage detection and scrubbing as a single
+        export, and cleans up partial output on failure.
+        """
+        ffmpeg, _ = self._commands()
+        self._export_dir()
+        cmd = [*ffmpeg, *tail]
+        if self.busy:
+            raise ExportBusy("another export or snapshot is already running; try again shortly")
+        async with self._lock:
+            returncode, stderr_tail = await self._spawn(cmd, timeout_s, url)
+            produced = sorted(collect())
+            if returncode != 0 or not produced:
+                for path in produced:
+                    self._cleanup(path)
+                if NO_FOOTAGE_PATTERNS.search(stderr_tail):
+                    raise NoFootageInWindow(
+                        "ffmpeg reported no footage for this window; check "
+                        "nvr_list_recording_segments for a window that has recordings",
+                        stderr_tail=stderr_tail,
+                    )
+                raise ExportFailed(f"ffmpeg exited with code {returncode}", stderr_tail=stderr_tail)
+            return produced, stderr_tail

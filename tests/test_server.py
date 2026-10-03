@@ -61,6 +61,13 @@ EXPECTED_TOOLS = {
     "nvr_snapshot",
     "nvr_list_exports",
     "nvr_delete_export",
+    # Phase N7b investigation primitives
+    "nvr_list_recording_segments",
+    "nvr_list_motion_windows",
+    "nvr_contact_sheet",
+    "nvr_sample_frames",
+    "nvr_get_export",
+    "nvr_purge_exports",
 }
 
 

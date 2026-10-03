@@ -36,6 +36,7 @@ DEVICE_ENV_SUFFIXES: dict[str, str] = {
     "RTSP_PASSWORD": "rtsp_password",
     "EXPORT_DIR": "export_dir",
     "EXPORT_MAX_MINUTES": "export_max_minutes",
+    "EXPORT_RETENTION_DAYS": "export_retention_days",
     "FFMPEG": "ffmpeg_path",
 }
 GLOBAL_ENV_SUFFIXES: dict[str, str] = {
@@ -96,6 +97,7 @@ class DeviceSettings(BaseModel):
     rtsp_password: SecretStr | None = Field(default=None, max_length=128)
     export_dir: str = Field(default="exports", min_length=1, max_length=1024)
     export_max_minutes: int = Field(default=60, ge=1, le=1440)
+    export_retention_days: int = Field(default=7, ge=1, le=3650)
     ffmpeg_path: str | None = Field(default=None, max_length=1024)
 
     @field_validator("host", mode="before")

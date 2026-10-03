@@ -24,6 +24,7 @@ from ..tools import (
     device,
     events,
     export,
+    investigate,
     media,
     raw,
     storage,
@@ -44,6 +45,7 @@ TOOL_MODULES = (
     events,
     system,
     export,
+    investigate,
 )
 
 

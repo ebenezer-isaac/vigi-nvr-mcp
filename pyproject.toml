@@ -27,6 +27,9 @@ dependencies = [
   "cryptography>=42",
   "pydantic>=2.6,<3",
   "python-dotenv>=1.0",
+  # IANA tz database for zoneinfo on platforms without a system copy (Windows, slim
+  # containers); used by nvr_list_recording_segments / nvr_list_motion_windows tz.
+  "tzdata>=2024.1",
 ]
 
 [project.optional-dependencies]

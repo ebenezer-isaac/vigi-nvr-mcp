@@ -15,7 +15,7 @@ import pytest
 
 from tests.helpers import FakeNvr
 from vigi_nvr_mcp.core.redact import REDACTED
-from vigi_nvr_mcp.tools import detection, events, media, storage, system
+from vigi_nvr_mcp.tools import detection, events, investigate, media, storage, system
 from vigi_nvr_mcp.tools.shared import DetectionKind, decode_name
 
 PW = "S3cr3t" + "CamPw"  # distinctive value (not the field name) for leak checks
@@ -183,11 +183,14 @@ async def test_get_storage(ctx, wired) -> None:
 
 
 async def test_search_recordings(ctx, wired) -> None:
-    result = await storage.search_recordings(ctx, 1, "2026-10-03")
+    # Folded into nvr_list_recording_segments (N7b); the old name is an alias.
+    result = await investigate.search_recordings(ctx, 1, "2026-10-03")
     _assert_envelope(result)
     data = result["data"]
     assert (data["channel"], data["date"], data["segment_count"]) == (1, "2026-10-03", 1)
-    assert data["segments"][0]["type"] == "continuous"
+    # "continuous" now normalises to the typed kind, raw value preserved.
+    assert data["segments"][0]["type"] == "normal"
+    assert data["segments"][0]["raw_type"] == "continuous"
 
 
 async def test_list_events_and_since_filter(ctx, wired) -> None:
@@ -242,7 +245,8 @@ async def test_include_raw_attaches_raw(ctx, wired) -> None:
     assert "raw" in (await media.get_video_config(ctx, include_raw=True))["data"]
     assert "raw" in (await system.get_time(ctx, include_raw=True))["data"]
     assert (
-        "raw" in (await storage.search_recordings(ctx, 1, "2026-10-03", include_raw=True))["data"]
+        "raw"
+        in (await investigate.search_recordings(ctx, 1, "2026-10-03", include_raw=True))["data"]
     )
 
 
@@ -298,7 +302,7 @@ async def test_all_reads_send_only_get(wired, make_ctx) -> None:
     await media.get_image_config(ctx, 1)
     await detection.get_detection_config(ctx, 1, "people")
     await storage.get_storage(ctx)
-    await storage.search_recordings(ctx, 1, "2026-10-03")
+    await investigate.search_recordings(ctx, 1, "2026-10-03")
     await events.list_events(ctx)
     await system.get_users(ctx)
     await system.get_firewall(ctx)
@@ -330,7 +334,7 @@ async def test_detection_rejects_unknown_kind(ctx, fake) -> None:
 @pytest.mark.parametrize("date", ["03-10-2026", "2026/10/03", "today", "", "2026-1-1"])
 async def test_search_rejects_bad_date(ctx, fake, date) -> None:
     install(fake)
-    result = await storage.search_recordings(ctx, 1, date)
+    result = await investigate.search_recordings(ctx, 1, date)
     assert result["error"]["code"] == "INVALID_INPUT"
     assert fake.requests == []
 

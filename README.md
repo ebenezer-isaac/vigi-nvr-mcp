@@ -86,6 +86,7 @@ directory is loaded if present). Start from `.env.example`. Never commit `.env`.
 | `VIGI_NVR_RTSP_PASSWORD` | (NVR password) | RTSP password; defaults to `VIGI_NVR_PASSWORD` |
 | `VIGI_NVR_EXPORT_DIR` | `~/.local/share/vigi-nvr-mcp/exports` | Clip/snapshot output (dir 0700) |
 | `VIGI_NVR_EXPORT_MAX_MINUTES` | `60` | Longest export window, 1-1440 |
+| `VIGI_NVR_EXPORT_RETENTION_DAYS` | `7` | Age after which `nvr_purge_exports` deletes a clip, 1-3650 |
 | `VIGI_NVR_FFMPEG` | (PATH) | Path to `ffmpeg` if not on `PATH` |
 | `VIGI_MCP_TRANSPORT` | `stdio` | `stdio` or `streamable-http` |
 | `VIGI_MCP_HOST` | `127.0.0.1` | IP literal to bind for HTTP |
@@ -144,10 +145,20 @@ Fields named `ciphertext`, `key`, `stok`, `passwd`, `pwd`, `token`, `secret` or
 | `nvr_get_rtsp_status` | read | ONVIF/RTSP enablement plus a TCP probe of the RTSP port |
 | `nvr_enable_rtsp` | **write** | One-time ONVIF/RTSP enable (`onvif_server` set) |
 | `nvr_get_stream_url` | read | Redacted live RTSP URL + which env vars hold the credentials |
-| `nvr_export_clip` | **write** (local) | Exports a replay window to mp4 (`ffmpeg -c copy`) |
+| `nvr_export_clip` | **write** (local) | Exports a replay window to mp4 (`ffmpeg -c copy`; `target_max_mb`/`max_width` re-encode to fit) |
 | `nvr_snapshot` | read | One JPEG frame from a live stream into the export dir |
-| `nvr_list_exports`, `nvr_delete_export` | read / **write** | Manage the export directory (path-confined) |
+| `nvr_list_exports`, `nvr_delete_export` | read / **write** | Manage the export directory (path-confined); listing reports age and retention |
+| `nvr_list_recording_segments` | read | Typed recording timeline for a channel/day (`nvr_search_recordings` is an alias) |
+| `nvr_list_motion_windows` | read | Merged, de-duplicated activity windows across the timeline and event logs |
+| `nvr_contact_sheet` | read | One JPEG grid of time-stamped frames across a window, with a tile→time map |
+| `nvr_sample_frames` | read | Individual JPEG frames at an interval across a window |
+| `nvr_get_export` | read | Returns a file's content as base64 (≤ `max_mb`, else `TOO_LARGE`) |
+| `nvr_purge_exports` | **write** | Deletes exports older than the retention window (double-gated, dry-run) |
 | `nvr_call` | read/**write** | Raw `{"method", module: params}`; `login` and `user_management` always refused |
+
+The export directory is also exposed as MCP **resources** (`exports://<name>`,
+blob content, path-confined) so clients that support resources can fetch a file
+without base64 in a tool result.
 
 ### Write gating
 
@@ -212,10 +223,73 @@ window that actually has footage; an empty window surfaces as
 > `admin` login. Every URL this server returns or logs is redacted; only
 > `ffmpeg` ever sees the plaintext.
 
-Exports can be large and are never deleted automatically. Keep
-`VIGI_NVR_EXPORT_DIR` on a disk with room, and prune old clips with
-`nvr_delete_export` (or a retention job). The directory is created with mode
-0700; exported footage is not encrypted.
+Exports can be large. Keep `VIGI_NVR_EXPORT_DIR` on a disk with room. Old clips
+are pruned by `nvr_purge_exports` (deletes files older than
+`VIGI_NVR_EXPORT_RETENTION_DAYS`, double write-gated, with a dry run), and
+`nvr_list_exports` reports each file's age and the next purge. The directory is
+created with mode 0700; exported footage is not encrypted.
+
+## Investigation recipe
+
+The MCP is the data plane; your agent (with vision and a mail tool) does the
+looking, deciding and sending. To answer something like *"find footage of when a
+car came to the front door yesterday and email it to me"*, an agent can follow
+this verbatim (names and dates are placeholders):
+
+1. **Find the activity windows.** Ask the NVR's own timeline, not the raw video:
+
+   ```text
+   nvr_list_motion_windows(channel="Main Door", date="2026-10-02",
+                           kinds=["motion","smart","alarm"])
+   ```
+
+   This returns merged `[{channel, name, start, end, duration_s, kinds, sources}]`
+   windows. (`channel` may be a number, or `"all"` to sweep every channel.)
+
+2. **Look at each window cheaply.** For every window, build one contact sheet and
+   inspect it with vision. Each tile has its exact time burned in, so a hit can be
+   cited to the second:
+
+   ```text
+   nvr_contact_sheet(channel=5, start="2026-10-02T14:03:00Z",
+                     end="2026-10-02T14:05:00Z", cols=4, rows=3)
+   ```
+
+   The result includes a `tiles` list mapping each tile to its timestamp. One
+   contact sheet is one image for the agent to read, so a day of windows is a
+   handful of images, not hours of video.
+
+3. **Pin the moment.** On a hit, pull individual frames around it to find the
+   exact second:
+
+   ```text
+   nvr_sample_frames(channel=5, start="2026-10-02T14:03:40Z",
+                     end="2026-10-02T14:04:10Z", every_s=1)
+   ```
+
+4. **Export a mail-sized clip.** Re-encode to fit the agent's mail attachment cap
+   (Gmail is ~25 MB; 20 is a safe target):
+
+   ```text
+   nvr_export_clip(channel=5, start="2026-10-02T14:03:50Z",
+                   end="2026-10-02T14:04:05Z", target_max_mb=20,
+                   confirm_write=true)        # needs VIGI_NVR_ALLOW_WRITES=true
+   ```
+
+   The result reports `original_bytes`, `encoded_bytes` and `fits_target`.
+
+5. **Retrieve and send.** Fetch the bytes and hand them to the mail tool:
+
+   ```text
+   nvr_get_export(name="ch5_...mp4", max_mb=20)   # base64 content
+   ```
+
+   Or, if your client supports MCP resources, read `exports://ch5_...mp4`
+   directly. Then send it with the agent's own Gmail/mail tool.
+
+Exports live on the server host (`VIGI_NVR_EXPORT_DIR`), not on the agent's
+machine; `nvr_get_export` and the `exports://` resources are how a remote agent
+pulls them. Housekeeping runs through `nvr_purge_exports`.
 
 ## Security notes
 
