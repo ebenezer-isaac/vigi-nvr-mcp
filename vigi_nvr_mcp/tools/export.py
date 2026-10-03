@@ -26,6 +26,7 @@ from mcp.server.fastmcp import FastMCP
 
 from ..core.errors import DeviceError, InvalidInput, ProtocolError
 from ..core.state import Outcome
+from ..core.types import ConfirmWrite
 from ..core.write_gate import check_write_gate
 from ..investigate.sheets import reencode_params, reencode_tail
 from ..media import DEFAULT_BITRATE_BPS
@@ -355,7 +356,7 @@ def register(mcp: FastMCP, ctx: ToolContext) -> list[str]:
         return await get_rtsp_status(ctx, runner)
 
     @mcp.tool(name="nvr_enable_rtsp")
-    async def _enable(confirm_write: bool = False) -> dict[str, Any]:
+    async def _enable(confirm_write: ConfirmWrite = False) -> dict[str, Any]:
         """Enable ONVIF/RTSP on the NVR (onvif_server set). One-time setup. WRITE:
         needs VIGI_NVR_ALLOW_WRITES=true and confirm_write=true. Honours
         VIGI_NVR_DRY_RUN. Re-reads and returns enabled_before/after."""
@@ -374,7 +375,7 @@ def register(mcp: FastMCP, ctx: ToolContext) -> list[str]:
         start: str,
         end: str,
         stream: int = 1,
-        confirm_write: bool = False,
+        confirm_write: ConfirmWrite = False,
         target_max_mb: float | None = None,
         max_width: int | None = None,
     ) -> dict[str, Any]:
@@ -405,7 +406,7 @@ def register(mcp: FastMCP, ctx: ToolContext) -> list[str]:
         return await list_exports(ctx)
 
     @mcp.tool(name="nvr_delete_export")
-    async def _delete(name: str, confirm_write: bool = False) -> dict[str, Any]:
+    async def _delete(name: str, confirm_write: ConfirmWrite = False) -> dict[str, Any]:
         """Delete one file from the export directory by name (path-confined; the name
         must be a generated export filename). WRITE: needs VIGI_NVR_ALLOW_WRITES=true
         and confirm_write=true."""

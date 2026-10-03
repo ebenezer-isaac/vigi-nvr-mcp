@@ -23,6 +23,7 @@ from mcp.server.fastmcp import FastMCP
 from .. import client as client_module
 from ..core.errors import InvalidInput, NotFound, PreconditionFailed
 from ..core.redact import redact
+from ..core.types import ConfirmWrite
 from ..core.write_gate import check_write_gate
 from ..planning import build_cleanup_plan
 from . import ToolContext, run_tool
@@ -288,7 +289,10 @@ def register(mcp: FastMCP, ctx: ToolContext) -> list[str]:
 
     @mcp.tool(name="nvr_remove_channel")
     async def _remove(
-        channel_id: str, expected_uuid: str, confirm_write: bool = False, force: bool = False
+        channel_id: str,
+        expected_uuid: str,
+        confirm_write: ConfirmWrite = False,
+        force: bool = False,
     ) -> dict[str, Any]:
         """Unbind one channel (chm_del_dev). DESTRUCTIVE. Requires
         VIGI_NVR_ALLOW_WRITES=true, confirm_write=true and expected_uuid equal to
@@ -299,7 +303,7 @@ def register(mcp: FastMCP, ctx: ToolContext) -> list[str]:
 
     @mcp.tool(name="nvr_move_channel")
     async def _move(
-        old_id: str, new_id: str, expected_uuid: str, confirm_write: bool = False
+        old_id: str, new_id: str, expected_uuid: str, confirm_write: ConfirmWrite = False
     ) -> dict[str, Any]:
         """Move a binding to another channel slot (chm_mod_dev_chn), keeping its
         credentials and settings. Refuses if new_id is occupied (the firmware would

@@ -191,7 +191,7 @@ async def test_backup_accepts_blob_and_reports_fields(make_ctx, fake, tmp_path) 
     assert len(result["data"]["sha256"]) == 64
 
 
-# ---- confirm_write at the real FastMCP boundary: documents the actual behaviour ---
+# ---- confirm_write at the real FastMCP boundary: only the boolean true confirms ---
 
 
 async def _boundary_call(mcp, name: str, args: dict[str, Any]) -> dict[str, Any] | None:
@@ -208,10 +208,12 @@ async def _boundary_call(mcp, name: str, args: dict[str, Any]) -> dict[str, Any]
     return json.loads(content[0].text)
 
 
-async def test_confirm_write_boundary_coercion_is_not_fail_open(fake) -> None:
-    """Round-1 said the boundary "coerces only genuine bools"; it does NOT — truthy
-    strings coerce to True. But this is not a dangerous fail-open: only affirmative
-    values pass, negatives refuse, and unparseable values fail closed (no I/O)."""
+async def test_confirm_write_boundary_only_true_confirms(fake) -> None:
+    """X1b: the ``confirm_write`` parameter is now typed ``ConfirmWrite``, whose
+    BeforeValidator collapses every value except the JSON boolean ``true`` to
+    ``False``. So a truthy string/number no longer coerces to ``True`` and slips
+    past the gate: it reaches the gate as ``False`` and is refused with a single
+    ``WRITE_REFUSED`` envelope and zero I/O (no schema error, no ToolError)."""
     from vigi_nvr_mcp.backend import NvrBackend
     from vigi_nvr_mcp.server import MCP_ENV_PREFIX, build_server
 
@@ -219,19 +221,23 @@ async def test_confirm_write_boundary_coercion_is_not_fail_open(fake) -> None:
     backend = NvrBackend.from_env(nvr_env(ALLOW_WRITES="true"), http_transport=fake.transport())
     mcp, _ = build_server(load_global_settings(MCP_ENV_PREFIX, {}), backend)
 
-    async def sent(val: Any) -> bool | None:
+    async def sent(val: Any) -> dict[str, Any] | None:
         fake.requests.clear()
         r = await _boundary_call(
             mcp, "nvr_raw_call",
             {"method": "set", "module": "system", "params": {}, "confirm_write": val},
         )
-        if r is None:
-            return None  # fail-closed at the type boundary
-        return bool([b for _, b in fake.api_requests if b.get("method") != "get"])
+        wrote = bool([b for _, b in fake.api_requests if b.get("method") != "get"])
+        return {"env": r, "wrote": wrote}
 
-    assert await sent("true") is True  # truthy string coerces (NOT "only genuine bools")
-    assert await sent("yes") is True
-    assert await sent("false") is False  # negatives refuse
-    assert await sent("no") is False
-    assert await sent("sure") is None  # unparseable -> fail-closed, no write
-    assert await sent("2") is None
+    # Only the genuine JSON boolean true authorises the write.
+    ok = await sent(True)
+    assert ok["env"]["success"] is True and ok["wrote"] is True
+
+    # Every non-boolean-true value is refused with the standard envelope and no I/O.
+    for val in ("true", "1", 1, "yes", "false", "0", 0, "sure", "2", None):
+        out = await sent(val)
+        assert out["env"] is not None, f"{val!r} must fail closed with an envelope, not a ToolError"
+        assert out["env"]["success"] is False, f"confirm_write={val!r} must be refused"
+        assert out["env"]["error"]["code"] == "WRITE_REFUSED", f"{val!r} must be WRITE_REFUSED"
+        assert out["wrote"] is False, f"confirm_write={val!r} must perform zero write I/O"

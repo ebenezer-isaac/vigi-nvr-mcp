@@ -9,10 +9,11 @@ tables, tool names, env prefixes) belongs outside `core/`.
 | Module | Purpose |
 |---|---|
 | `config.py` | `DeviceSettings` / `GlobalSettings` from `<PREFIX>*` env vars; fail-fast validation that never echoes values |
+| `types.py` | Shared strict tool-input types. `ConfirmWrite`: the annotated `bool` every mutating tool uses for `confirm_write`, so the MCP boundary cannot coerce a truthy string/number past the write gate |
 | `envelope.py` | `{success, data, error}` response envelope |
 | `errors.py` | Exception hierarchy with stable `kind` codes and `details()` |
 | `redact.py` | Pure recursive redaction of credential-bearing fields |
-| `write_gate.py` | Two-key write gate: `<PREFIX>ALLOW_WRITES=true` + per-call `confirm_write=true` |
+| `write_gate.py` | Two-key write gate: `<PREFIX>ALLOW_WRITES=true` + per-call `confirm_write=true`. The gate requires the boolean `True`; pair it with `types.ConfirmWrite` on the tool parameter so a truthy string/number is collapsed to `False` at the boundary (one `WRITE_REFUSED` envelope, no I/O, no schema error) rather than coerced through |
 | `state.py` | `AtomicStateFile` (strict-schema, 0600, tmp+replace) and `ReservationStore` (cross-process lock, admit-and-reserve, fail-closed) — the one-fact primitive |
 | `breaker.py` | Login circuit breaker: a thin policy over `ReservationStore` (atomic admit, sticky trip, cooldown, canonical device key) |
 | `serial.py` | `SerialLock` / `GuardedWriter` serialising read-check-write operations and central dry-run |

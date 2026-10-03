@@ -182,8 +182,12 @@ without base64 in a tool result.
 ### Write gating
 
 Any non-`get` method requires **both** `VIGI_NVR_ALLOW_WRITES=true` on the
-server and `confirm_write: true` on the call (the literal boolean). Channel
-writes add three more checks:
+server and `confirm_write: true` on the call (the literal JSON boolean). Only the
+boolean `true` confirms: every mutating tool types its `confirm_write` parameter
+as `core.types.ConfirmWrite`, so a truthy string or number (`"true"`, `"1"`, `1`,
+`"yes"`) is collapsed to `false` at the MCP boundary and refused with a single
+`WRITE_REFUSED` envelope and no network call — it is never coerced through the
+gate. Channel writes add three more checks:
 
 - `expected_uuid` must match the live row, which is re-read just before writing.
 - Remove refuses a live (`online=="1"`) row unless `force=true`.
