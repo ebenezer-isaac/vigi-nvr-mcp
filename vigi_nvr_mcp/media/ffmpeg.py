@@ -22,6 +22,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from ..core.config import DeviceSettings
+from ..core.errors import InvalidInput
 from . import (
     DEFAULT_BITRATE_BPS,
     FREE_SPACE_FACTOR,
@@ -140,14 +141,14 @@ def confine(export_dir: Path, name: str) -> Path:
     (following symlinks) outside the export directory.
     """
     if not SAFE_NAME.fullmatch(name):
-        raise ValueError(
+        raise InvalidInput(
             "name must be a generated export filename "
             "(e.g. ch5_20261003t120000z_20261003t120200z_s1.mp4)"
         )
     base = export_dir.resolve()
     target = (base / name).resolve()
     if target.parent != base:
-        raise ValueError("name escapes the export directory")
+        raise InvalidInput("name escapes the export directory")
     return target
 
 

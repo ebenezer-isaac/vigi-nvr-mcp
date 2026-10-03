@@ -24,7 +24,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from ..core.errors import DeviceError, ProtocolError
+from ..core.errors import DeviceError, InvalidInput, ProtocolError
 from ..core.write_gate import check_write_gate
 from ..investigate.sheets import reencode_params, reencode_tail
 from ..media import DEFAULT_BITRATE_BPS
@@ -56,7 +56,7 @@ def _parse_dt(name: str, value: str) -> datetime:
     try:
         return datetime.fromisoformat(value)
     except (TypeError, ValueError) as exc:
-        raise ValueError(
+        raise InvalidInput(
             f"{name} must be an ISO-8601 timestamp with a UTC offset (e.g. 2026-10-03T12:00:00Z)"
         ) from exc
 
@@ -164,9 +164,9 @@ async def _estimate_bitrate(ctx: ToolContext, channel: int) -> int:
 
 def _validate_target(target_max_mb: float | None, max_width: int | None) -> None:
     if target_max_mb is not None and target_max_mb <= 0:
-        raise ValueError("target_max_mb must be positive")
+        raise InvalidInput("target_max_mb must be positive")
     if max_width is not None and not (64 <= max_width <= 8192):
-        raise ValueError("max_width must be between 64 and 8192")
+        raise InvalidInput("max_width must be between 64 and 8192")
 
 
 async def _transcode_to_target(

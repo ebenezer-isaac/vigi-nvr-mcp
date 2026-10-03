@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
+from ..core.errors import InvalidInput
+
 
 @dataclass(frozen=True)
 class WindowInput:
@@ -31,9 +33,9 @@ class WindowInput:
 
     def __post_init__(self) -> None:
         if self.start.tzinfo is None or self.end.tzinfo is None:
-            raise ValueError("window start/end must be timezone-aware")
+            raise InvalidInput("window start/end must be timezone-aware")
         if self.end < self.start:
-            raise ValueError("window end must not precede start")
+            raise InvalidInput("window end must not precede start")
 
 
 @dataclass(frozen=True)
@@ -74,7 +76,7 @@ def merge(
     ``(start, channel)``.
     """
     if min_gap_s < 0 or min_len_s < 0:
-        raise ValueError("min_gap_s and min_len_s must be non-negative")
+        raise InvalidInput("min_gap_s and min_len_s must be non-negative")
     by_channel: dict[int, list[WindowInput]] = {}
     for item in items:
         by_channel.setdefault(item.channel, []).append(item)

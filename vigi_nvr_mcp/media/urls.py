@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from urllib.parse import quote, urlsplit, urlunsplit
 
 from ..core.config import DeviceSettings
+from ..core.errors import InvalidInput
 from . import MAX_CHANNEL, MIN_CHANNEL, STREAMS
 
 REDACTED_USERINFO = "<redacted>:<redacted>"
@@ -24,23 +25,23 @@ REDACTED_USERINFO = "<redacted>:<redacted>"
 
 def validate_channel(channel: object) -> int:
     if isinstance(channel, bool) or not isinstance(channel, int):
-        raise ValueError(f"channel must be an integer {MIN_CHANNEL}-{MAX_CHANNEL}")
+        raise InvalidInput(f"channel must be an integer {MIN_CHANNEL}-{MAX_CHANNEL}")
     if not MIN_CHANNEL <= channel <= MAX_CHANNEL:
-        raise ValueError(f"channel must be between {MIN_CHANNEL} and {MAX_CHANNEL}")
+        raise InvalidInput(f"channel must be between {MIN_CHANNEL} and {MAX_CHANNEL}")
     return channel
 
 
 def validate_stream(stream: object) -> int:
     if isinstance(stream, bool) or not isinstance(stream, int) or stream not in STREAMS:
-        raise ValueError("stream must be 1 (main) or 2 (sub)")
+        raise InvalidInput("stream must be 1 (main) or 2 (sub)")
     return stream
 
 
 def _require_aware(name: str, value: object) -> datetime:
     if not isinstance(value, datetime):
-        raise ValueError(f"{name} must be a datetime")
+        raise InvalidInput(f"{name} must be a datetime")
     if value.tzinfo is None or value.utcoffset() is None:
-        raise ValueError(f"{name} must be timezone-aware (include a UTC offset)")
+        raise InvalidInput(f"{name} must be timezone-aware (include a UTC offset)")
     return value
 
 
@@ -57,11 +58,11 @@ def validate_window(
     start_dt = _require_aware("start", start).astimezone(UTC)
     end_dt = _require_aware("end", end).astimezone(UTC)
     if end_dt <= start_dt:
-        raise ValueError("end must be strictly after start")
+        raise InvalidInput("end must be strictly after start")
     duration_s = (end_dt - start_dt).total_seconds()
     max_s = settings.export_max_minutes * 60
     if duration_s > max_s:
-        raise ValueError(
+        raise InvalidInput(
             f"window is {duration_s / 60:.1f} min; the limit is "
             f"{settings.export_max_minutes} min (VIGI_NVR_EXPORT_MAX_MINUTES)"
         )

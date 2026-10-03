@@ -16,7 +16,7 @@ from enum import StrEnum
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from ..core.errors import DeviceError, ProtocolError
+from ..core.errors import DeviceError, InvalidInput, ProtocolError
 
 # Channel / stream bounds mirror the media package (NVR1016H: 16 channels).
 MIN_CHANNEL = 1
@@ -84,7 +84,7 @@ def resolve_tz(tz: str) -> tzinfo:
     try:
         return ZoneInfo(key)
     except (ZoneInfoNotFoundError, ValueError, ModuleNotFoundError) as exc:
-        raise ValueError(f"tz must be 'local', 'utc' or an IANA zone name; got {key!r}") from exc
+        raise InvalidInput(f"tz must be 'local', 'utc' or an IANA zone name; got {key!r}") from exc
 
 
 __all__ = [

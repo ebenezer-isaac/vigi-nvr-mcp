@@ -21,7 +21,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, ConfigDict
 
-from ..core.errors import DeviceError, NotFound, ProtocolError
+from ..core.errors import DeviceError, InvalidInput, NotFound, ProtocolError
 from ..core.redact import redact
 from ..core.write_gate import check_write_gate
 from ..investigate import (
@@ -107,10 +107,10 @@ async def search_recordings(
 def _validate_kinds(kinds: list[str] | None) -> set[str]:
     chosen = list(DEFAULT_KINDS) if kinds is None else kinds
     if not isinstance(chosen, list) or not all(isinstance(k, str) for k in chosen):
-        raise ValueError("kinds must be a list of strings")
+        raise InvalidInput("kinds must be a list of strings")
     unknown = sorted(set(chosen) - VALID_KINDS)
     if unknown:
-        raise ValueError(f"unknown kinds {unknown}; valid: {sorted(VALID_KINDS)}")
+        raise InvalidInput(f"unknown kinds {unknown}; valid: {sorted(VALID_KINDS)}")
     return set(chosen)
 
 
@@ -118,7 +118,7 @@ def _resolve_day(date: str | None, since: str | None) -> str:
     """The calendar day to query playback for, from ``date`` or ``since``'s date."""
     source = date or (since[:10] if since else None)
     if not source:
-        raise ValueError("provide date (YYYY-MM-DD) or since (an ISO-8601 timestamp)")
+        raise InvalidInput("provide date (YYYY-MM-DD) or since (an ISO-8601 timestamp)")
     DateInput(channel=MIN_CHANNEL, date=source)  # reuse the YYYY-MM-DD validator
     return source
 
@@ -129,7 +129,7 @@ def _parse_bound(name: str, value: str | None, tz_obj: Any) -> datetime | None:
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError as exc:
-        raise ValueError(f"{name} must be an ISO-8601 timestamp") from exc
+        raise InvalidInput(f"{name} must be an ISO-8601 timestamp") from exc
     return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=tz_obj)
 
 
@@ -227,7 +227,7 @@ async def list_motion_windows(
         lo = _parse_bound("since", since, tz_obj)
         hi = _parse_bound("until", until, tz_obj)
         if min_gap_s < 0 or min_len_s < 0:
-            raise ValueError("min_gap_s and min_len_s must be non-negative")
+            raise InvalidInput("min_gap_s and min_len_s must be non-negative")
 
         names = await _channel_names(ctx)
         if isinstance(channel, str) and channel.strip().lower() == "all":
@@ -296,9 +296,9 @@ async def contact_sheet(
     async def action() -> dict[str, Any]:
         ch, st = validate_channel(channel), validate_stream(stream)
         if not (1 <= cols <= 10 and 1 <= rows <= 10):
-            raise ValueError("cols and rows must each be between 1 and 10")
+            raise InvalidInput("cols and rows must each be between 1 and 10")
         if not (64 <= width <= 8192):
-            raise ValueError("width must be between 64 and 8192")
+            raise InvalidInput("width must be between 64 and 8192")
         start_utc, end_utc, duration_s, url = _replay(ctx, ch, st, start, end)
         tiles = tile_timestamps(start_utc, end_utc, cols, rows)
         name = f"ch{ch}_{format_timestamp(start_utc)}_{format_timestamp(end_utc)}_s{st}.jpg"
@@ -333,9 +333,9 @@ async def sample_frames(
     async def action() -> dict[str, Any]:
         ch, st = validate_channel(channel), validate_stream(stream)
         if not (0 < max_frames <= 240):
-            raise ValueError("max_frames must be between 1 and 240")
+            raise InvalidInput("max_frames must be between 1 and 240")
         if every_s <= 0:
-            raise ValueError("every_s must be positive")
+            raise InvalidInput("every_s must be positive")
         start_utc, end_utc, duration_s, url = _replay(ctx, ch, st, start, end)
         stamps = sample_timestamps(start_utc, end_utc, every_s, max_frames)
         export_dir = ctx.settings.export_path
@@ -395,7 +395,7 @@ def _rename_frames(
 async def get_export(ctx: ToolContext, name: str, max_mb: float = 20.0) -> dict[str, Any]:
     async def action() -> dict[str, Any]:
         if max_mb <= 0:
-            raise ValueError("max_mb must be positive")
+            raise InvalidInput("max_mb must be positive")
         target = confine(ctx.settings.export_path, name)
         if not target.is_file():
             raise NotFound(f"no export named {name!r}")

@@ -13,6 +13,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any
 
+from ..core.errors import InvalidInput
+
 MB = 1024 * 1024
 # Re-encode: budget (bits/s) -> CRF. Lower CRF = better quality / bigger file.
 _CRF_BY_BUDGET: tuple[tuple[float, int], ...] = (
@@ -35,11 +37,11 @@ def _epoch(dt: datetime) -> int:
 def tile_timestamps(start: datetime, end: datetime, cols: int, rows: int) -> list[dict[str, Any]]:
     """Even tile sampling times across ``[start, end)``: tile ``i`` -> ``start + i*step``."""
     if cols < 1 or rows < 1:
-        raise ValueError("cols and rows must be >= 1")
+        raise InvalidInput("cols and rows must be >= 1")
     n = cols * rows
     duration = (end - start).total_seconds()
     if duration <= 0:
-        raise ValueError("end must be after start")
+        raise InvalidInput("end must be after start")
     step = duration / n
     return [
         {"tile": i, "timestamp": (start + timedelta(seconds=i * step)).isoformat()}
@@ -63,11 +65,11 @@ def _drawtext(start_epoch: int, fontsize: int) -> str:
 def contact_sheet_vf(cols: int, rows: int, width: int, start: datetime, duration_s: float) -> str:
     """Build the ``-vf`` filtergraph for a ``cols x rows`` contact sheet."""
     if cols < 1 or rows < 1:
-        raise ValueError("cols and rows must be >= 1")
+        raise InvalidInput("cols and rows must be >= 1")
     if width < cols:
-        raise ValueError("width must be at least cols pixels")
+        raise InvalidInput("width must be at least cols pixels")
     if duration_s <= 0:
-        raise ValueError("duration must be positive")
+        raise InvalidInput("duration must be positive")
     n = cols * rows
     fps = n / duration_s
     tile_w = max(2, width // cols)
@@ -103,12 +105,12 @@ def sample_timestamps(
 ) -> list[dict[str, Any]]:
     """Frame times at ``every_s`` intervals from ``start``, capped at ``max_frames``."""
     if every_s <= 0:
-        raise ValueError("every_s must be positive")
+        raise InvalidInput("every_s must be positive")
     if max_frames < 1:
-        raise ValueError("max_frames must be >= 1")
+        raise InvalidInput("max_frames must be >= 1")
     duration = (end - start).total_seconds()
     if duration <= 0:
-        raise ValueError("end must be after start")
+        raise InvalidInput("end must be after start")
     out: list[dict[str, Any]] = []
     k = 0
     while k < max_frames:
@@ -131,7 +133,7 @@ def sample_frames_tail(
 ) -> list[str]:
     """Full ffmpeg argv tail writing ``frame_count`` JPEGs to a ``%0Nd`` pattern."""
     if frame_count < 1:
-        raise ValueError("frame_count must be >= 1")
+        raise InvalidInput("frame_count must be >= 1")
     stimeout_us = str(int(timeout_s * 1_000_000))
     vf = f"fps=1/{every_s:g}"
     if width is not None:
@@ -148,10 +150,10 @@ def reencode_params(
 ) -> dict[str, Any]:
     """Choose an x264 CRF (and optional scale) from the duration and target size."""
     if duration_s <= 0:
-        raise ValueError("duration must be positive")
+        raise InvalidInput("duration must be positive")
     if target_max_mb is not None:
         if target_max_mb <= 0:
-            raise ValueError("target_max_mb must be positive")
+            raise InvalidInput("target_max_mb must be positive")
         target_bytes = int(target_max_mb * MB)
         budget_bps = target_bytes * 8 * _SIZE_MARGIN / duration_s
         crf = next(crf for threshold, crf in _CRF_BY_BUDGET if budget_bps >= threshold)
