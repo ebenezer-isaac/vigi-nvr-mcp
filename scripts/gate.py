@@ -91,25 +91,64 @@ def check_secrets() -> tuple[bool, str]:
     return result.returncode == 0, _tail(result.stdout + result.stderr)
 
 
-def _ellipsis_bodies(tree: ast.AST) -> list[int]:
-    hits = []
+# A function/method whose ENTIRE body (after an optional docstring) is one of these is
+# a stub that silently does nothing / always answers the same - exactly the dead
+# ``_resolver: return False`` path x1c round-2 found. An explicit marker opts out when a
+# trivial body is genuinely intended (a no-op hook, a Protocol default).
+_TRIVIAL_MARKER = "# intentional-trivial:"
+
+
+def _trivial_reason(stmt: ast.stmt) -> str | None:
+    if isinstance(stmt, ast.Pass):
+        return "body is only `pass`"
+    if (
+        isinstance(stmt, ast.Expr)
+        and isinstance(stmt.value, ast.Constant)
+        and stmt.value.value is Ellipsis
+    ):
+        return "bare ... body"
+    if isinstance(stmt, ast.Return):
+        value = stmt.value
+        if value is None:
+            return "body is only `return`"
+        if isinstance(value, ast.Constant) and (
+            value.value is None
+            or value.value is True
+            or value.value is False
+            or value.value is Ellipsis
+        ):
+            return f"body is only `return {value.value!r}`"
+    return None
+
+
+def _stub_bodies(tree: ast.AST, lines: list[str]) -> list[str]:
+    """Lines of functions/methods (and bare-``...`` classes) whose whole body is trivial,
+    unless opted out with a ``# intentional-trivial: <reason>`` marker in the function."""
+    hits: list[str] = []
     for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
-            body = node.body
-            first = body[0] if body else None
-            if (
-                isinstance(first, ast.Expr)
-                and isinstance(first.value, ast.Constant)
-                and isinstance(first.value.value, str)
-            ):
-                body = body[1:]  # skip docstring
-            if (
-                len(body) == 1
-                and isinstance(body[0], ast.Expr)
-                and isinstance(body[0].value, ast.Constant)
-                and body[0].value.value is Ellipsis
-            ):
-                hits.append(node.lineno)
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            continue
+        body = node.body
+        first = body[0] if body else None
+        if (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Constant)
+            and isinstance(first.value.value, str)
+        ):
+            body = body[1:]  # skip docstring
+        if len(body) != 1:
+            continue
+        reason = _trivial_reason(body[0])
+        if reason is None:
+            continue
+        # A ClassDef body is only flagged for a bare ``...`` (``pass``/``return`` cannot
+        # be a class body of consequence here); functions are flagged for all shapes.
+        if isinstance(node, ast.ClassDef) and reason != "bare ... body":
+            continue
+        span = lines[node.lineno - 1 : (node.end_lineno or node.lineno)]
+        if any(_TRIVIAL_MARKER in line for line in span):
+            continue
+        hits.append(f"{node.lineno}: {reason}")
     return hits
 
 
@@ -118,10 +157,11 @@ def scan_stubs(package: Path) -> list[str]:
     for path in sorted(package.rglob("*.py")):
         rel = path.relative_to(package.parent).as_posix()
         text = path.read_text(encoding="utf-8")
-        for lineno, line in enumerate(text.splitlines(), start=1):
+        lines = text.splitlines()
+        for lineno, line in enumerate(lines, start=1):
             if STUB_WORDS.search(line):
                 problems.append(f"{rel}:{lineno}: {STUB_WORDS.search(line).group(0)}")
-        problems.extend(f"{rel}:{n}: bare ... body" for n in _ellipsis_bodies(ast.parse(text)))
+        problems.extend(f"{rel}:{entry}" for entry in _stub_bodies(ast.parse(text), lines))
     return problems
 
 

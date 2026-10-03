@@ -151,10 +151,36 @@ def test_stub_scan_detects_markers_and_ellipsis_bodies(tmp_path: Path) -> None:
         "def g():\n    raise NotImplemented" + "Error\n",
         encoding="utf-8",
     )
-    (pkg / "ok.py").write_text("def h():\n    return ...\n", encoding="utf-8")
     problems = gate.scan_stubs(pkg)
     assert len(problems) == 3
     assert all(p.startswith("pkg/a.py") for p in problems)
+
+
+def test_stub_scan_flags_trivial_return_and_pass_bodies(tmp_path: Path) -> None:
+    # The extended scan (XF2) also flags a function whose whole body is a trivial
+    # `return False|True|None|...` or `pass` - the shape of the dead `_resolver: return
+    # False` x1c round-2 found - unless opted out with `# intentional-trivial:`.
+    gate = _load_gate()
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "stubs.py").write_text(
+        "def dead():\n    return False\n\n"
+        "def nope():\n    return None\n\n"
+        "def noop():\n    pass\n\n"
+        "def dots():\n    return ...\n",
+        encoding="utf-8",
+    )
+    (pkg / "fine.py").write_text(
+        "def allowed():\n    # intentional-trivial: documented no-op hook\n    return None\n\n"
+        "def real():\n    x = 1\n    return x\n\n"
+        "class P:\n    def m(self) -> int:\n        '''a protocol default; docstring only'''\n",
+        encoding="utf-8",
+    )
+    problems = gate.scan_stubs(pkg)
+    assert len(problems) == 4, problems  # dead, nope, noop, dots
+    assert all(p.startswith("pkg/stubs.py") for p in problems)
+    assert any("return False" in p for p in problems)
+    assert any("pass" in p for p in problems)
 
 
 def test_stub_scan_is_clean_on_package() -> None:
