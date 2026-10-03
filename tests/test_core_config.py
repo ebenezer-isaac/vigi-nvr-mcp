@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 import pytest
 
 from tests.helpers import DOC_HOST, NVR_PREFIX, TEST_PASSWORD, nvr_env
 from vigi_nvr_mcp.core.config import (
+    DEVICE_ENV_SUFFIXES,
+    GLOBAL_ENV_SUFFIXES,
     DeviceSettings,
     host_is_set,
     load_device_settings,
@@ -12,6 +17,43 @@ from vigi_nvr_mcp.core.config import (
 from vigi_nvr_mcp.core.errors import ConfigError
 
 MCP = "VIGI_MCP_"
+
+ENV_EXAMPLE = Path(__file__).resolve().parent.parent / ".env.example"
+_ASSIGNMENT = re.compile(r"^#?\s*(VIGI_(?:NVR|MCP)_[A-Z0-9_]+)\s*=")
+
+# A valid value for every documented device suffix, so a full config loads. Keeping
+# this exhaustive means a newly added setting must be given a value here too.
+_VALID_DEVICE_VALUES: dict[str, str] = {
+    "HOST": DOC_HOST,
+    "PORT": "443",
+    "USERNAME": "admin",
+    "PASSWORD": TEST_PASSWORD,
+    "VERIFY_TLS": "false",
+    "TIMEOUT_SECONDS": "10",
+    "ALLOW_WRITES": "false",
+    "LOGIN_DISABLED": "false",
+    "MAX_LOGIN_FAILURES": "1",
+    "DRY_RUN": "false",
+    "BACKUP_DIR": "backups",
+    "STATE_DIR": "~/.local/state/vigi-nvr-mcp",
+    "TLS_FINGERPRINT_SHA256": "ab" * 32,
+    "RTSP_PORT": "554",
+    "RTSP_USERNAME": "viewer",
+    "RTSP_PASSWORD": "viewer-pass",
+    "EXPORT_DIR": "~/.local/share/vigi-nvr-mcp/exports",
+    "EXPORT_MAX_MINUTES": "60",
+    "EXPORT_RETENTION_DAYS": "7",
+    "FFMPEG": "/usr/bin/ffmpeg",
+}
+
+
+def _env_example_keys() -> set[str]:
+    keys: set[str] = set()
+    for line in ENV_EXAMPLE.read_text(encoding="utf-8").splitlines():
+        match = _ASSIGNMENT.match(line.strip())
+        if match:
+            keys.add(match.group(1))
+    return keys
 
 
 def load(**overrides: str) -> DeviceSettings:
@@ -212,3 +254,47 @@ def test_mcp_host_must_be_ip_literal(bind: str) -> None:
 
 def test_non_loopback_bind_is_flagged() -> None:
     assert load_global_settings(MCP, {"VIGI_MCP_HOST": "0.0.0.0"}).mcp_host_is_loopback is False  # noqa: S104
+
+
+# ---- strict env keys: every documented setting is known and loads ----------------
+
+
+def test_env_example_device_keys_are_all_known_to_the_loader() -> None:
+    """Every VIGI_NVR_* key in .env.example must be a documented device setting.
+
+    load_device_settings rejects any unknown ``VIGI_NVR_*`` variable as a probable
+    typo (a silently-ignored one could leave a write gate or TLS verification in an
+    unintended state), so a key shipped in .env.example that is not in the suffix
+    table would fail closed the moment someone copied the file. This guards the
+    N7/N7b additions (RTSP_*/EXPORT_*/FFMPEG) and the fixer's STATE_DIR /
+    TLS_FINGERPRINT_SHA256. (The VIGI_MCP_ loader is not strict - it reads only the
+    keys it knows - so global keys such as VIGI_MCP_LOG_LEVEL are out of scope.)
+    """
+    device_keys = {k for k in _env_example_keys() if k.startswith(NVR_PREFIX)}
+    known = {NVR_PREFIX + s for s in DEVICE_ENV_SUFFIXES}
+    unknown = device_keys - known
+    assert unknown == set(), f".env.example documents VIGI_NVR_ keys the loader rejects: {unknown}"
+
+    # Proof that an undocumented VIGI_NVR_ key really is refused.
+    with pytest.raises(ConfigError, match="VIGI_NVR_NOT_A_SETTING"):
+        load_device_settings(NVR_PREFIX, nvr_env(NOT_A_SETTING="x"))
+
+
+def test_every_documented_device_key_loads_without_config_error() -> None:
+    """A config that sets every documented device key (incl. N7/N7b's) loads cleanly."""
+    env = {NVR_PREFIX + suffix: _VALID_DEVICE_VALUES[suffix] for suffix in DEVICE_ENV_SUFFIXES}
+    settings = load_device_settings(NVR_PREFIX, env)
+    assert settings.rtsp_port == 554
+    assert settings.export_retention_days == 7
+    assert settings.export_max_minutes == 60
+    assert settings.tls_fingerprint_sha256 == "ab" * 32
+    assert settings.state_dir == "~/.local/state/vigi-nvr-mcp"
+
+
+def test_env_example_covers_every_documented_setting() -> None:
+    """.env.example should mention every documented key (active or commented)."""
+    documented = {NVR_PREFIX + s for s in DEVICE_ENV_SUFFIXES} | {
+        MCP + s for s in GLOBAL_ENV_SUFFIXES
+    }
+    missing = documented - _env_example_keys()
+    assert missing == set(), f".env.example omits documented keys: {sorted(missing)}"
