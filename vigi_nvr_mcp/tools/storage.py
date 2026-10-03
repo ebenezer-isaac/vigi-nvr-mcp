@@ -1,7 +1,11 @@
-"""NVR storage and recording reads (harddisk_manage, plan_advance, record_plan,
-playback). Reply shapes are firmware-specific and unverified until the first live
-run, so normalisation is permissive and the redacted raw reply is available via
-include_raw. All calls are ``get`` (read-only)."""
+"""NVR storage reads (harddisk_manage, plan_advance, record_plan). Reply shapes
+are firmware-specific and unverified until the first live run, so normalisation is
+permissive and the redacted raw reply is available via include_raw. All calls are
+``get`` (read-only).
+
+The recording-search tool lives in :mod:`vigi_nvr_mcp.tools.investigate` now
+(``nvr_list_recording_segments``, with ``nvr_search_recordings`` kept as an
+alias); Phase N7b folded the two into one typed implementation."""
 
 from __future__ import annotations
 
@@ -12,7 +16,7 @@ from pydantic import BaseModel, ConfigDict
 
 from ..client import extract_rows
 from . import ToolContext, run_tool
-from .shared import DateInput, parse_input, require_section, with_raw
+from .shared import require_section, with_raw
 
 Json = dict[str, Any] | list[Any] | None
 
@@ -24,16 +28,6 @@ class StorageInfo(BaseModel):
     disks: list[dict[str, Any]]
     overwrite_policy: Json = None
     record_plan: Json = None
-
-
-class RecordingSearch(BaseModel):
-    """Recorded segments for one channel on one day."""
-
-    model_config = ConfigDict(extra="ignore")
-    channel: int
-    date: str
-    segment_count: int
-    segments: list[dict[str, Any]]
 
 
 async def list_disks(ctx: ToolContext) -> dict[str, Any]:
@@ -55,33 +49,12 @@ def normalise_storage(replies: dict[str, Any]) -> StorageInfo:
     )
 
 
-def normalise_recordings(channel: int, date: str, reply: Any) -> RecordingSearch:
-    segments = extract_rows(reply, marker="start_time")
-    if not segments:
-        segments = extract_rows(reply, marker="start")
-    return RecordingSearch(
-        channel=channel, date=date, segment_count=len(segments), segments=segments
-    )
-
-
 async def get_storage(ctx: ToolContext, include_raw: bool = False) -> dict[str, Any]:
     async def action() -> dict[str, Any]:
         replies = await ctx.client.get_storage()
         return with_raw(normalise_storage(replies).model_dump(), replies, include_raw)
 
     return await run_tool("nvr_get_storage", action)
-
-
-async def search_recordings(
-    ctx: ToolContext, channel: int, date: str, include_raw: bool = False
-) -> dict[str, Any]:
-    async def action() -> dict[str, Any]:
-        args = parse_input(DateInput, channel=channel, date=date)
-        reply = await ctx.client.search_recordings(args.channel, args.date)
-        model = normalise_recordings(args.channel, args.date, reply)
-        return with_raw(model.model_dump(), reply, include_raw)
-
-    return await run_tool("nvr_search_recordings", action)
 
 
 def register(mcp: FastMCP, ctx: ToolContext) -> list[str]:
@@ -102,16 +75,8 @@ def register(mcp: FastMCP, ctx: ToolContext) -> list[str]:
         data.raw."""
         return await get_storage(ctx, include_raw)
 
-    @mcp.tool(name="nvr_search_recordings")
-    async def _search(channel: int, date: str, include_raw: bool = False) -> dict[str, Any]:
-        """List recorded video segments for one channel (1-16) on one calendar day
-        (date as YYYY-MM-DD), read-only. Returns each segment's start/end/type.
-        include_raw=true adds the raw device reply under data.raw."""
-        return await search_recordings(ctx, channel, date, include_raw)
-
     return [
         "nvr_list_disks",
         "nvr_get_recording_status",
         "nvr_get_storage",
-        "nvr_search_recordings",
     ]
