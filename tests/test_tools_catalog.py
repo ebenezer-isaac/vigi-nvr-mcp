@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -16,6 +17,19 @@ EXPECTED_MODULES = 61
 EXPECTED_CALLS = 586
 EXPECTED_MUTATING = 217
 DENIED = {"login", "user_management"}
+
+_PKG = Path(__file__).resolve().parent.parent / "vigi_nvr_mcp"
+
+
+def test_dry_run_has_a_single_implementation() -> None:
+    """Dry-run is implemented once, in the guarded-write executor (core/serial.py),
+    and nowhere else: no per-tool copies branch on settings.dry_run."""
+    echo = '{"dry_run": True, "request": request}'
+    producers = [p for p in _PKG.rglob("*.py") if echo in p.read_text(encoding="utf-8")]
+    assert producers == [_PKG / "core" / "serial.py"], producers
+    for tool in ("tools/channels.py", "tools/raw.py"):
+        src = (_PKG / tool).read_text(encoding="utf-8")
+        assert "settings.dry_run" not in src, f"{tool} still branches on dry_run itself"
 
 
 @pytest.fixture
@@ -141,7 +155,8 @@ async def test_nvr_call_dry_run_returns_body_without_sending(dctx, fake) -> None
     result = await raw.nvr_call(
         dctx, spec.module, spec.method, spec.key, {"a": 1}, confirm_write=True, allow_extra=True
     )
-    assert result["data"]["dry_run"] == {"method": spec.method, spec.module: {"a": 1}}
+    assert result["data"]["dry_run"] is True
+    assert result["data"]["request"] == {"method": spec.method, spec.module: {"a": 1}}
     assert fake.requests == []
 
 
@@ -208,5 +223,6 @@ async def test_raw_call_logs_warning_and_sends_get(ctx, fake, caplog) -> None:
 
 async def test_raw_call_dry_run(dctx, fake) -> None:
     result = await raw.nvr_raw_call(dctx, "set", "whatever", {"a": 1}, confirm_write=True)
-    assert result["data"]["dry_run"] == {"method": "set", "whatever": {"a": 1}}
+    assert result["data"]["dry_run"] is True
+    assert result["data"]["request"] == {"method": "set", "whatever": {"a": 1}}
     assert fake.requests == []

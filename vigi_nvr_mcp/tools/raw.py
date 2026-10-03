@@ -20,7 +20,7 @@ from mcp.server.fastmcp import FastMCP
 
 from ..catalog import get_catalog
 from ..client import validate_call
-from ..core.envelope import fail, ok
+from ..core.envelope import fail
 from ..core.write_gate import check_write_gate
 from . import ToolContext, run_tool
 
@@ -70,19 +70,15 @@ async def nvr_call(
     except ValueError as exc:
         return fail("INVALID_INPUT", str(exc))
 
+    def action() -> Any:
+        return ctx.client.call(method, module, params)
+
     mutating = spec.mutates or method != "get"
     if mutating:
         refusal = check_write_gate(ctx.settings, method, confirm_write, read_methods=_FORCE_GATE)
         if refusal is not None:
             return refusal
-    if ctx.settings.dry_run:
-        return ok({"dry_run": body, "mutates": mutating})
-
-    def action() -> Any:
-        return ctx.client.call(method, module, params)
-
-    if mutating:
-        return await run_tool("nvr_call", lambda: ctx.writes.run(action))
+        return await run_tool("nvr_call", lambda: ctx.writes.run(body, action))
     return await run_tool("nvr_call", action)
 
 
@@ -104,15 +100,14 @@ async def nvr_raw_call(
     if refusal is not None:
         return refusal
     log.warning("nvr_raw_call bypassing the catalog: method=%s module=%s", method, module)
-    if ctx.settings.dry_run:
-        return ok({"dry_run": {"method": method, module: params}, "mutates": method != "get"})
 
     def action() -> Any:
         return ctx.client.call(method, module, params)
 
     if method == "get":
         return await run_tool("nvr_raw_call", action)
-    return await run_tool("nvr_raw_call", lambda: ctx.writes.run(action))
+    request = {"method": method, module: params}
+    return await run_tool("nvr_raw_call", lambda: ctx.writes.run(request, action))
 
 
 def register(mcp: FastMCP, ctx: ToolContext) -> list[str]:
@@ -131,8 +126,8 @@ def register(mcp: FastMCP, ctx: ToolContext) -> list[str]:
         matches. Anything the catalog flags as mutating, or whose method is not
         "get", needs VIGI_NVR_ALLOW_WRITES=true AND confirm_write=true. Set
         allow_extra=true to send keys outside the call's example. With
-        VIGI_NVR_DRY_RUN the exact body is returned under data.dry_run and not
-        sent. Credential fields in the reply are redacted.
+        VIGI_NVR_DRY_RUN the exact body is returned as data.request (and
+        data.dry_run=true) and not sent. Credential fields in the reply are redacted.
         """
         return await nvr_call(ctx, module, method, key, params, confirm_write, allow_extra)
 
