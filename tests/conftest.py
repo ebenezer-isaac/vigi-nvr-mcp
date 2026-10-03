@@ -24,6 +24,19 @@ def _isolate_breaker_state(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture
+def core_pkg():
+    """The core package under test, for the package-agnostic conformance suite.
+
+    The canonical ``tests/conformance/test_breaker_contract.py`` is copied verbatim
+    into every repo and must not name any one package; it resolves ``breaker`` /
+    ``errors`` / ``state`` from whatever this fixture returns. This repo provides its
+    own core package."""
+    import vigi_nvr_mcp.core as core
+
+    return core
+
+
+@pytest.fixture
 def fake() -> FakeNvr:
     return FakeNvr()
 

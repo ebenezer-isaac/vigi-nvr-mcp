@@ -38,8 +38,8 @@ class ExportLedger(BaseModel):
     version: Literal[1] = 1
     reserved: int = Field(ge=0)
     holder_pid: int | None
-    started_at: float | None
-    last_update: float
+    started_at: float | None = Field(allow_inf_nan=False)
+    last_update: float = Field(allow_inf_nan=False)
 
 
 class ExportSerial:
