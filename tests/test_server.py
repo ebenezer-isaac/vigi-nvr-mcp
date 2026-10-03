@@ -32,6 +32,7 @@ EXPECTED_TOOLS = {
     "nvr_list_channels",
     "nvr_get_channel",
     "nvr_find_duplicate_channels",
+    "nvr_plan_channel_cleanup",
     "nvr_remove_channel",
     "nvr_move_channel",
     "nvr_list_disks",
