@@ -21,6 +21,10 @@ def _isolate_breaker_state(tmp_path_factory, monkeypatch):
     real ``~/.local/state`` and isolated between tests (each starts closed)."""
     state = tmp_path_factory.mktemp("breaker-state")
     monkeypatch.setattr("vigi_nvr_mcp.core.breaker.default_state_dir", lambda _app: state)
+    # ``tools`` binds ``default_state_dir`` at import, so the export serial it builds in
+    # ToolContext needs the name patched there too (otherwise it writes the real
+    # ~/.local/state and leaks between runs).
+    monkeypatch.setattr("vigi_nvr_mcp.tools.default_state_dir", lambda _app: state)
 
 
 @pytest.fixture
