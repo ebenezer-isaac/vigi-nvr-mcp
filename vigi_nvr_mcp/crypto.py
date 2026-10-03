@@ -8,7 +8,7 @@ All functions are pure. The flow, as captured from an NVR1016H on firmware 1.1.3
    challenge, base64-encoded, then URL-encoded.
 
 Other firmware lines use different schemes (some SHA-256 based). Confirm yours with
-``tools/capture-login`` before trusting this module.
+``vigi-nvr-mcp --check-auth`` before trusting this module.
 """
 
 from __future__ import annotations
