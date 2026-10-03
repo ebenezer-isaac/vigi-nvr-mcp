@@ -23,6 +23,7 @@ from pydantic import BaseModel, ConfigDict
 
 from ..core.errors import DeviceError, InvalidInput, NotFound, ProtocolError
 from ..core.redact import redact
+from ..core.types import ConfirmWrite
 from ..core.write_gate import check_write_gate
 from ..investigate import (
     MAX_CHANNEL,
@@ -562,7 +563,7 @@ def register(mcp: FastMCP, ctx: ToolContext) -> list[str]:
         return await get_export(ctx, name, max_mb)
 
     @mcp.tool(name="nvr_purge_exports")
-    async def _purge(confirm_write: bool = False) -> dict[str, Any]:
+    async def _purge(confirm_write: ConfirmWrite = False) -> dict[str, Any]:
         """Delete exports older than VIGI_NVR_EXPORT_RETENTION_DAYS (default 7).
         Double-gated like any delete: needs VIGI_NVR_ALLOW_WRITES=true and
         confirm_write=true. VIGI_NVR_DRY_RUN=true lists what would be deleted

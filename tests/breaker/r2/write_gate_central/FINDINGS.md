@@ -51,14 +51,16 @@ Axes with no finding (attacked, held — see `test_axes_that_hold.py`):
   serialise, all succeed, and exactly 20 list reads occur (before+after per remove), so
   each re-read sees the prior delete.
 - **confirm_write at the real FastMCP boundary:** round-1's "coerces only genuine bools"
-  is **inaccurate** — pydantic coerces truthy strings ("true", "yes", "on", "y", "t",
-  "1", 1) to True and negatives ("false", "no", "0", 0) to False; unparseable values
-  ("sure", "2", " true ", "") raise a `ToolError` *before the tool body runs*
-  (fail-closed, no I/O). This is **not** a dangerous fail-open: no value a caller means
-  as "no" coerces to True. Noted, not scored. (A malformed `confirm_write` surfacing as
-  a raised `ToolError` rather than an envelope is a generic FastMCP input-validation
-  property of every typed arg, fail-closed, and out of this vector — flagged for the
-  config/server vector.)
+  was **inaccurate** at the time — pydantic coerced truthy strings ("true", "yes", "on",
+  "y", "t", "1", 1) to True and negatives to False, and unparseable values raised a
+  `ToolError` before the tool body ran. No value a caller meant as "no" coerced to True,
+  so it was never a dangerous fail-open, but a truthy *string* did reach the gate as True.
+  **Closed in X1b (2026-10-03):** `confirm_write` is now typed `core.types.ConfirmWrite`,
+  whose `BeforeValidator` collapses every value except the JSON boolean `true` to `False`.
+  So "true"/"1"/1/"yes"/"sure"/"2"/null all reach the gate as `False` and are refused with
+  a single `WRITE_REFUSED` envelope and **zero I/O** (no schema error, no `ToolError`); only
+  the genuine boolean `true` authorises the write. See
+  `test_axes_that_hold.py::test_confirm_write_boundary_only_true_confirms`.
 - **ALLOW_WRITES:** read per call from `settings.allow_writes` in `check_write_gate`;
   unparseable env fails fast at startup (`ConfigError`), never fail-open (round-1 held).
 - **Backup content & reported fields:** HTML/XML (leading `<`), JSON error envelopes, and

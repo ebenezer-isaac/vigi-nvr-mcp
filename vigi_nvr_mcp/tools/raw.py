@@ -21,6 +21,7 @@ from mcp.server.fastmcp import FastMCP
 from ..catalog import get_catalog
 from ..client import validate_call
 from ..core.envelope import fail
+from ..core.types import ConfirmWrite
 from ..core.write_gate import check_write_gate
 from . import ToolContext, run_tool
 
@@ -125,7 +126,7 @@ def register(mcp: FastMCP, ctx: ToolContext) -> list[str]:
         method: str,
         key: str,
         params: dict[str, Any] | None = None,
-        confirm_write: bool = False,
+        confirm_write: ConfirmWrite = False,
         allow_extra: bool = False,
     ) -> dict[str, Any]:
         """Catalogued gateway to any NVR call. Identify the call with
@@ -144,7 +145,7 @@ def register(mcp: FastMCP, ctx: ToolContext) -> list[str]:
         method: str,
         module: str,
         params: dict[str, Any] | None = None,
-        confirm_write: bool = False,
+        confirm_write: ConfirmWrite = False,
     ) -> dict[str, Any]:
         """Off-catalog escape hatch: send {"method": method, module: params}
         directly. Prefer nvr_call. Everything but method="get" needs both write
