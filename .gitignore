@@ -29,4 +29,10 @@ node_modules/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Runtime output and local state (may hold footage, backups or session tokens)
 backups/
+exports/
+state/
+*.mp4
+*.jpg
