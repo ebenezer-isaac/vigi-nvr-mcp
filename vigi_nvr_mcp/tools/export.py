@@ -333,7 +333,7 @@ async def delete_export(ctx: ToolContext, name: str, confirm_write: bool = False
 
 
 def register(mcp: FastMCP, ctx: ToolContext) -> list[str]:
-    runner = FfmpegRunner(ctx.settings)
+    runner = ctx.runner
 
     @mcp.tool(name="nvr_get_rtsp_status")
     async def _status() -> dict[str, Any]:

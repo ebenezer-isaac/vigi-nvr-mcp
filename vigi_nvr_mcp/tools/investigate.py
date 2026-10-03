@@ -478,7 +478,7 @@ def read_export_blob(ctx: ToolContext, name: str) -> bytes:
 
 
 def register(mcp: FastMCP, ctx: ToolContext) -> list[str]:
-    runner = FfmpegRunner(ctx.settings)
+    runner = ctx.runner
 
     @mcp.tool(name="nvr_list_recording_segments")
     async def _segments(
