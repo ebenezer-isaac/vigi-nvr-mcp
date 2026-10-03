@@ -125,11 +125,13 @@ async def get_stream_url(ctx: ToolContext, channel: int, stream: int = 1) -> dic
             "channel": validate_channel(channel),
             "stream": validate_stream(stream),
             "url": redacted_url(url),
-            # Keys deliberately avoid the names redact() strips (password*, pwd, …);
-            # these are env-var hints, not secrets.
+            # These are env-var hints, not secrets, so the keys must survive redact():
+            # they avoid every fragment the matcher strips (pass/pwd/secret/token/
+            # cipher, the exact names, and *_key). "rtsp_pw" is safe where "rtsp_pass"
+            # is not - the fixer's matcher redacts any key containing "pass".
             "credentials_env": {
                 "rtsp_user": "VIGI_NVR_RTSP_USERNAME (defaults to VIGI_NVR_USERNAME)",
-                "rtsp_pass": "VIGI_NVR_RTSP_PASSWORD (defaults to VIGI_NVR_PASSWORD)",
+                "rtsp_pw": "VIGI_NVR_RTSP_PASSWORD (defaults to VIGI_NVR_PASSWORD)",
             },
             "note": (
                 "The real URL embeds credentials in its userinfo and is passed to your "

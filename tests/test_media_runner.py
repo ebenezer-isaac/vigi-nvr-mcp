@@ -372,10 +372,17 @@ async def test_tool_stream_url_redacted(
     ctx = _ctx(make_ctx, export_dir)
     result = await export_tool.get_stream_url(ctx, 5, 1)
     data = result["data"]
+    # The URL is redacted by redacted_url(), and the plaintext password never appears.
     assert PW not in data["url"] and "p%40ss" not in data["url"]
     assert data["url"] == "rtsp://<redacted>:<redacted>@192.0.2.10:554/live/5/1/avm"
-    assert "rtsp_pass" in data["credentials_env"]
-    assert "VIGI_NVR_RTSP_PASSWORD" in data["credentials_env"]["rtsp_pass"]
+    # The env-var hints must survive the fixer's key-based redaction: "rtsp_pw" is
+    # safe, whereas a key containing "pass" (e.g. "rtsp_pass") would be stripped.
+    assert "rtsp_pw" in data["credentials_env"]
+    assert "VIGI_NVR_RTSP_PASSWORD" in data["credentials_env"]["rtsp_pw"]
+    assert "rtsp_pass" not in data["credentials_env"]
+    import json as _json
+
+    assert PW not in _json.dumps(data)  # no credential leaks anywhere in the result
 
 
 async def test_tool_export_refused_without_writes(

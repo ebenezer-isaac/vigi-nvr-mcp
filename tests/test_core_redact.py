@@ -36,6 +36,27 @@ def test_similar_but_safe_keys_are_kept_except_password_prefix(field: str) -> No
         assert result == {field: "v"}
 
 
+def test_rtsp_credential_keys_are_redacted_but_hint_keys_survive() -> None:
+    """The N7 RTSP settings must be covered by the fixer's key-based matcher.
+
+    rtsp_password contains "pass", so it is stripped wherever it appears (settings
+    dumps, device replies). nvr_get_stream_url's env-var hints are not secrets, so
+    their keys (rtsp_user, rtsp_pw) must survive - rtsp_pass would NOT.
+    """
+    src = {
+        "rtsp_password": "secret-pw",
+        "rtsp_pass": "would-be-stripped",
+        "rtsp_user": "VIGI_NVR_RTSP_USERNAME",
+        "rtsp_pw": "VIGI_NVR_RTSP_PASSWORD",
+    }
+    assert redact(src) == {
+        "rtsp_password": REDACTED,
+        "rtsp_pass": REDACTED,
+        "rtsp_user": "VIGI_NVR_RTSP_USERNAME",
+        "rtsp_pw": "VIGI_NVR_RTSP_PASSWORD",
+    }
+
+
 def test_nested_dicts_and_lists() -> None:
     src = {
         "channel": [
