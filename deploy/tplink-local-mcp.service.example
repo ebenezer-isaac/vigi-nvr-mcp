@@ -1,0 +1,49 @@
+# Example systemd unit. Copy to /etc/systemd/system/tplink-local-mcp.service.
+#
+#   sudo useradd --system --home /var/lib/tplink-local-mcp --shell /usr/sbin/nologin tplinkmcp
+#   sudo install -m 0600 -o tplinkmcp -g tplinkmcp .env.example /etc/tplink-local-mcp.env
+#   (edit /etc/tplink-local-mcp.env, then)
+#   sudo systemctl daemon-reload && sudo systemctl enable --now tplink-local-mcp
+#
+# The HTTP transport binds to loopback. Reach it over Tailscale or an SSH tunnel,
+# never by exposing it on the LAN: the server has no authentication of its own.
+
+[Unit]
+Description=tplink-local-mcp (MCP server for local TP-Link devices)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tplinkmcp
+Group=tplinkmcp
+EnvironmentFile=/etc/tplink-local-mcp.env
+Environment=TPLINK_MCP_TRANSPORT=streamable-http
+Environment=TPLINK_MCP_HOST=127.0.0.1
+Environment=TPLINK_NVR_BACKUP_DIR=/var/lib/tplink-local-mcp/backups
+WorkingDirectory=/var/lib/tplink-local-mcp
+StateDirectory=tplink-local-mcp
+StateDirectoryMode=0700
+ExecStart=/opt/tplink-local-mcp/.venv/bin/tplink-local-mcp
+Restart=on-failure
+RestartSec=10
+# Do not hammer a device that is rejecting logins: cap restarts.
+StartLimitIntervalSec=600
+StartLimitBurst=3
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/tplink-local-mcp
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=true
+LockPersonality=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
