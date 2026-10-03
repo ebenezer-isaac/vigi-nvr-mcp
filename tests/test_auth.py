@@ -14,6 +14,7 @@ from vigi_nvr_mcp.core.errors import (
     ApiError,
     AuthFailed,
     LockoutGuard,
+    NonceInvalid,
     TokenExpired,
     TransportError,
 )
@@ -189,24 +190,27 @@ async def test_transport_error_during_login_counts_as_failure(make_settings) -> 
 # ---- -40410 nonce invalid: one re-challenge -------------------------------
 
 
-async def test_nonce_invalid_rechallenges_exactly_once(make_auth, fake) -> None:
+async def test_nonce_invalid_raises_without_resend(make_auth, fake) -> None:
+    # Decision AL-F5: on -40410 the login is NOT resent inside the same call.
+    # Exactly one login POST; NonceInvalid is raised (retryable), not counted.
     fake.nonce_invalid_times = 1
     auth = make_auth()
-    assert await auth.login() == FAKE_STOK_1
-    assert fake.login_attempts == 2
-    challenges = [b for p, b in fake.requests if "user_management" in b]
-    assert len(challenges) == 2
+    with pytest.raises(NonceInvalid):
+        await auth.login()
+    assert fake.login_attempts == 1
     assert auth.status()["failed_logins"] == 0
 
 
-async def test_second_nonce_invalid_is_a_failure(make_auth, fake) -> None:
-    fake.nonce_invalid_times = 5
+async def test_nonce_invalid_is_retryable_not_counted(make_auth, fake) -> None:
+    # A nonce rejection is retryable: once the device stops rejecting the nonce,
+    # the very next explicit login succeeds, and no failure was ever recorded.
+    fake.nonce_invalid_times = 1
     auth = make_auth()
-    with pytest.raises(AuthFailed) as info:
+    with pytest.raises(NonceInvalid):
         await auth.login()
-    assert info.value.code == -40410
-    assert fake.login_attempts == 2
-    assert auth.status()["failed_logins"] == 1
+    assert await auth.login() == FAKE_STOK_1
+    assert fake.login_attempts == 2  # one per explicit call, never two in one
+    assert auth.status()["failed_logins"] == 0
 
 
 # ---- (6) LOGIN_DISABLED -----------------------------------------------------

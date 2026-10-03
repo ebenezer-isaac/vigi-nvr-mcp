@@ -14,19 +14,29 @@ extra password-bearing POST.
 
 from __future__ import annotations
 
-from tests.helpers import FAKE_STOK_1, FakeNvr
+import pytest
+
+from tests.helpers import FakeNvr
+from vigi_nvr_mcp.core.errors import NonceInvalid
+
+# RECONCILED to orchestrator decision AL-F5 (fixer brief item 1): on -40410 the
+# login is NOT resent inside the same call. Exactly one login POST per explicit
+# login(); NonceInvalid is raised (retryable, not counted as a credential
+# failure). The original test expected an automatic resend that succeeded
+# (login_attempts == 2 was the builder's behaviour the breaker flagged); the
+# decision removes the resend entirely, which this now asserts.
 
 
 async def test_single_explicit_login_sends_at_most_one_login_post(
     make_auth, fake: FakeNvr
 ) -> None:
-    fake.nonce_invalid_times = 1  # first login POST is rejected with -40410
+    fake.nonce_invalid_times = 1  # first (and only) login POST is rejected with -40410
     auth = make_auth()
-    token = await auth.login()
-    assert token == FAKE_STOK_1
-    # Claim: never more than one HTTP login attempt per explicit call.
+    with pytest.raises(NonceInvalid):
+        await auth.login()
+    # Never more than one HTTP login attempt per explicit call, and no resend.
     assert fake.login_attempts == 1, (
-        "one explicit login() issued "
-        f"{fake.login_attempts} login POSTs (two password-bearing requests "
-        "reached the device)"
+        f"one explicit login() issued {fake.login_attempts} login POSTs"
     )
+    # A nonce rejection is retryable, so it is not counted as a credential failure.
+    assert auth.status()["failed_logins"] == 0

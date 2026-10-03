@@ -13,17 +13,23 @@ VIGI NVRs lock the account after repeated failed logins. Rules enforced here:
    first failure or when the device reports few attempts remaining.
 6. ``VIGI_NVR_LOGIN_DISABLED=true`` refuses every login before any network I/O.
 
-Plus a per-process failure budget (``VIGI_NVR_MAX_LOGIN_FAILURES``, default 1).
-The one exception to "never retry": -40410 (nonce stale/already used) means the
-password was never evaluated, so the challenge is fetched again and the login
-sent ONCE more. A second -40410 is recorded as a failure.
+Plus a persistent failure budget (``VIGI_NVR_MAX_LOGIN_FAILURES``, default 1)
+held by the file-backed :class:`~vigi_nvr_mcp.core.breaker.LoginBreaker`, so the
+budget survives restarts and crash-loops.
+
+On -40410 (nonce stale/already used) the password was never evaluated: the login
+is NOT resent inside the same call. Exactly one login POST per explicit
+``login()``; a :class:`~vigi_nvr_mcp.core.errors.NonceInvalid` is raised
+(retryable, not counted as a credential failure) and the caller may retry with a
+fresh challenge.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -31,7 +37,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from . import crypto
 from .core import breaker
 from .core.config import DeviceSettings
-from .core.errors import ApiError, AuthFailed, TransportError
+from .core.errors import ApiError, AuthFailed, NonceInvalid, TransportError
 from .errors import (
     FACTORY_RESET,
     LOCKED_CODES,
@@ -44,6 +50,7 @@ from .transport import STOK_RE, NvrTransport
 
 log = logging.getLogger(__name__)
 
+APP_NAME = "vigi-nvr-mcp"
 PASSWD_TYPE = "md5"  # noqa: S105 - protocol field value, always "md5"
 CHALLENGE_BODY: dict[str, Any] = {"user_management": {"get_encrypt_info": None}, "method": "do"}
 
@@ -70,7 +77,6 @@ class LoginSuccess(BaseModel):
 @dataclass(frozen=True)
 class AuthState:
     token: str | None = None
-    ledger: breaker.LoginLedger = field(default_factory=breaker.LoginLedger)
 
 
 def _int_or_none(value: Any) -> int | None:
@@ -83,18 +89,22 @@ class Authenticator:
         self._transport = transport
         self._lock = asyncio.Lock()
         self._state = AuthState()
+        state_dir = (
+            Path(settings.state_dir) if settings.state_dir else breaker.default_state_dir(APP_NAME)
+        )
+        self._breaker = breaker.LoginBreaker(state_dir, settings.host, settings)
 
     # ---- public API ---------------------------------------------------------
 
     def status(self) -> dict[str, Any]:
-        state = self._state
+        info = self._breaker.show()
         return {
-            "authenticated": state.token is not None,
-            "failed_logins": state.ledger.failed,
+            "authenticated": self._state.token is not None,
+            "failed_logins": info.get("failed", 0),
             "max_login_failures": self._settings.max_login_failures,
-            "successful_logins": state.ledger.successful,
+            "successful_logins": info.get("successful", 0),
             "login_disabled": self._settings.login_disabled,
-            "last_failure": state.ledger.last_failure,
+            "last_failure": info.get("last_failure"),
         }
 
     async def get_challenge(self) -> Challenge:
@@ -126,31 +136,38 @@ class Authenticator:
     # ---- internals ----------------------------------------------------------
 
     async def _login_locked(self, *, explicit: bool) -> str:
-        breaker.check_login_allowed(self._state.ledger, self._settings, explicit=explicit)
+        self._breaker.check(explicit=explicit)
         try:
             reply = await self._attempt(explicit=explicit)
         except ApiError as exc:
-            if exc.code != NONCE_INVALID:
-                raise self._record_failure(exc.code, exc.data) from None
-            log.info("login nonce rejected (-40410); fetching a fresh challenge once")
-            try:
-                reply = await self._attempt(explicit=explicit)
-            except ApiError as again:
-                raise self._record_failure(again.code, again.data) from None
+            if exc.code == NONCE_INVALID:
+                # The password was never evaluated, so this is NOT a credential
+                # failure and must not be counted. Exactly one login POST per
+                # explicit call: no automatic resend. The caller may retry.
+                log.info("login nonce rejected (-40410); not resending (retryable)")
+                raise NonceInvalid(
+                    "NVR rejected the login nonce (-40410) as stale or already used. "
+                    "No automatic resend; fetch a fresh challenge and retry the login."
+                ) from None
+            raise self._record_failure(exc.code, exc.data) from None
         try:
             success = LoginSuccess.model_validate(reply)
         except ValidationError:
             raise TransportError("NVR login reply did not contain a valid session token") from None
-        self._state = AuthState(
-            token=success.stok, ledger=breaker.record_success(self._state.ledger)
-        )
+        self._state = AuthState(token=success.stok)
+        self._breaker.record_success()
         log.info("login succeeded")
         return success.stok
 
     async def _attempt(self, *, explicit: bool) -> dict[str, Any]:
         """Fresh challenge + exactly one login POST. ApiError propagates to caller."""
         challenge = await self.get_challenge()
-        breaker.check_remaining_attempts(challenge.time, explicit=explicit)
+        breaker.check_remaining_attempts(
+            challenge.time,
+            explicit=explicit,
+            max_attempts=challenge.max_time,
+            lock_seconds_left=challenge.sec_left,
+        )
         try:
             password_field, encrypt_type = crypto.encode_login_password(
                 self._settings.password.get_secret_value(),
@@ -190,9 +207,8 @@ class Authenticator:
             "max_attempts": max_attempts,
             "lock_seconds_left": sec_left,
         }
-        self._state = AuthState(
-            token=None, ledger=breaker.record_failure(self._state.ledger, failure)
-        )
+        self._state = AuthState(token=None)
+        self._breaker.record_failure(failure)
         symbol = error_symbol(code) if code is not None else "UNKNOWN"
         parts = [note or f"Login rejected by NVR (error_code {code} {symbol})."]
         if code == FACTORY_RESET:

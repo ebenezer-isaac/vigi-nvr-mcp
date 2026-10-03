@@ -18,23 +18,34 @@ from tests.helpers import FakeNvr
 from vigi_nvr_mcp.backend import NvrBackend
 
 
-async def test_get_challenge_makes_no_io_when_login_disabled(make_auth, fake: FakeNvr) -> None:
+# RECONCILED to orchestrator decision AL-F4 / CC-F3 (fixer brief item 1, and the
+# amended 01-NVR-SPEC §N1): LOGIN_DISABLED freezes *login attempts* only. The
+# credential-free challenge probe stays allowed -- it is the lockout-safe status
+# check nvr_status/--check-auth exist for and spends no login attempt. The
+# original tests asserted zero I/O; the decision allows the probe but still
+# forbids any login POST, which is what these now assert.
+
+
+async def test_get_challenge_probes_but_never_logs_in_when_login_disabled(
+    make_auth, fake: FakeNvr
+) -> None:
     auth = make_auth(LOGIN_DISABLED="true")
     await auth.get_challenge()
-    assert fake.requests == [], (
-        "LOGIN_DISABLED=true but a pre-auth challenge POST was still sent: "
-        f"{[p for p, _ in fake.requests]}"
+    # The probe is allowed (reachability), but it must spend no login attempt.
+    assert fake.login_attempts == 0, (
+        "LOGIN_DISABLED=true but a login POST was sent during the challenge probe"
     )
 
 
-async def test_check_auth_makes_no_io_when_login_disabled(make_settings, fake: FakeNvr) -> None:
+async def test_check_auth_probes_but_never_logs_in_when_login_disabled(
+    make_settings, fake: FakeNvr
+) -> None:
     settings = make_settings(LOGIN_DISABLED="true")
     backend = NvrBackend(settings, http_transport=fake.transport())
     try:
         await backend.check_auth(login=False)
     finally:
         await backend.aclose()
-    assert fake.requests == [], (
-        "LOGIN_DISABLED=true but check_auth probed the device: "
-        f"{[p for p, _ in fake.requests]}"
+    assert fake.login_attempts == 0, (
+        "LOGIN_DISABLED=true but check_auth spent a login attempt"
     )

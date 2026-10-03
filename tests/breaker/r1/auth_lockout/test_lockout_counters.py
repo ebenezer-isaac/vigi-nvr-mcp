@@ -47,9 +47,12 @@ async def test_prelogin_lockout_surfaces_sec_left_and_max(make_auth, fake: FakeN
 # ---- F3: login-failure counters sent as strings are dropped -----------------
 
 
-async def test_login_failure_string_counters_are_surfaced(make_auth, fake: FakeNvr) -> None:
-    # Account locked; device reports the counters as strings (its own Challenge
-    # model accepts strings, so the firmware doing this is anticipated).
+async def test_login_failure_string_counters_are_dropped(make_auth, fake: FakeNvr) -> None:
+    # WON'T-FIX per orchestrator decision AL-F3 (fixer brief): there is no live
+    # evidence the firmware *failure* reply uses string counters, so the strict
+    # int parsing (_int_or_none) is kept and string counters drop to None. This
+    # test is inverted to document the accepted behaviour pending a live capture
+    # (Phase N5); revisit if the device is seen emitting string failure counters.
     fake.login_error = {
         "error_code": -40404,
         "data": {"time": "0", "max_time": "10", "sec_left": "1740"},
@@ -58,10 +61,6 @@ async def test_login_failure_string_counters_are_surfaced(make_auth, fake: FakeN
     with pytest.raises(AuthFailed) as info:
         await auth.login()
     err = info.value
-    # Claim: surface them exactly as the device reports.
-    assert err.lock_seconds_left == 1740, (
-        "string sec_left dropped to None by _int_or_none; "
-        f"got {err.lock_seconds_left!r}"
-    )
-    assert err.max_attempts == 10
-    assert err.attempts_left == 0
+    assert err.lock_seconds_left is None
+    assert err.max_attempts is None
+    assert err.attempts_left is None

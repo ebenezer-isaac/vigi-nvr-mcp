@@ -21,10 +21,28 @@ class ConfigError(DeviceError):
     kind = "CONFIG_ERROR"
 
 
+class InvalidInput(DeviceError, ValueError):
+    """Client-supplied input was rejected before any I/O.
+
+    Subclasses ``ValueError`` so validators that historically raised ``ValueError``
+    keep their callers working, while ``run_tool`` maps it (via its ``kind``) to an
+    ``INVALID_INPUT`` envelope. A plain ``ValueError`` from anywhere else is an
+    internal fault, not client input, and must NOT be reported as ``INVALID_INPUT``.
+    """
+
+    kind = "INVALID_INPUT"
+
+
 class TransportError(DeviceError):
     """Network, TLS, HTTP status or malformed-response failure."""
 
     kind = "TRANSPORT_ERROR"
+
+
+class TlsPinMismatch(TransportError):
+    """The peer certificate's SHA-256 did not match the configured pin."""
+
+    kind = "TLS_PIN_MISMATCH"
 
 
 class ApiError(DeviceError):
@@ -102,14 +120,52 @@ class TokenExpired(DeviceError):
     kind = "TOKEN_EXPIRED"
 
 
+class NonceInvalid(DeviceError):
+    """The device rejected the login nonce as stale/reused (-40410).
+
+    Retryable: the password was never evaluated, so it does NOT count as a
+    credential failure. One explicit login still sends exactly one login POST;
+    the caller may retry with a fresh challenge."""
+
+    kind = "NONCE_INVALID"
+
+
+class BreakerOpen(DeviceError):
+    """The persistent login breaker could not be read or written, or holds an
+    open state, so logins are refused (fail closed) until a human clears it."""
+
+    kind = "BREAKER_OPEN"
+
+
 class LockoutGuard(DeviceError):
-    """A login was refused locally (circuit breaker) to protect the account."""
+    """A login was refused locally (circuit breaker) to protect the account.
+
+    Carries the device-reported counters (``attempts_left``/``max_attempts``/
+    ``lock_seconds_left``) when the refusal was driven by a device challenge, so
+    the operator sees how long to wait, exactly like :class:`AuthFailed`."""
 
     kind = "LOGIN_REFUSED"
 
-    def __init__(self, reason: str) -> None:
+    def __init__(
+        self,
+        reason: str,
+        *,
+        attempts_left: int | None = None,
+        max_attempts: int | None = None,
+        lock_seconds_left: int | None = None,
+    ) -> None:
         self.reason = reason
+        self.attempts_left = attempts_left
+        self.max_attempts = max_attempts
+        self.lock_seconds_left = lock_seconds_left
         super().__init__(reason)
+
+    def details(self) -> dict[str, Any]:
+        return {
+            "attempts_left": self.attempts_left,
+            "max_attempts": self.max_attempts,
+            "lock_seconds_left": self.lock_seconds_left,
+        }
 
 
 class NotFound(DeviceError):
