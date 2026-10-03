@@ -185,6 +185,22 @@ def host_is_set(prefix: str, environ: Mapping[str, str] | None = None) -> bool:
     return bool(source.get(f"{prefix}HOST", "").strip())
 
 
+def reject_unknown_env(prefix: str, suffixes: Mapping[str, str], source: Mapping[str, str]) -> None:
+    """Fail loudly if any ``<prefix>*`` variable is not a documented setting.
+
+    Shared by both loaders: a silently-ignored typo in a ``<prefix>*`` name could
+    leave TLS verification, a write gate or the transport in an unintended state,
+    so the unknown names are reported, never dropped. ``suffixes`` is the loader's
+    ``<SUFFIX> -> field`` map."""
+    known = {prefix + suffix for suffix in suffixes}
+    unknown = sorted(k for k in source if k.startswith(prefix) and k not in known)
+    if unknown:
+        raise ConfigError(
+            f"Unknown {prefix}* variable(s): {', '.join(unknown)}. "
+            "Only documented settings are accepted; check for typos."
+        )
+
+
 def load_device_settings(prefix: str, environ: Mapping[str, str] | None = None) -> DeviceSettings:
     """Build DeviceSettings from ``<prefix>*`` variables. Fails fast.
 
@@ -193,13 +209,7 @@ def load_device_settings(prefix: str, environ: Mapping[str, str] | None = None) 
     an unintended state), so the unknown names are reported rather than dropped.
     """
     source = os.environ if environ is None else environ
-    known = {prefix + suffix for suffix in DEVICE_ENV_SUFFIXES}
-    unknown = sorted(k for k in source if k.startswith(prefix) and k not in known)
-    if unknown:
-        raise ConfigError(
-            f"Unknown {prefix}* variable(s): {', '.join(unknown)}. "
-            "Only documented settings are accepted; check for typos."
-        )
+    reject_unknown_env(prefix, DEVICE_ENV_SUFFIXES, source)
     raw: dict[str, object] = {
         field: source[prefix + suffix]
         for suffix, field in DEVICE_ENV_SUFFIXES.items()
@@ -217,6 +227,7 @@ def load_global_settings(prefix: str, environ: Mapping[str, str] | None = None) 
     if not _PREFIX.fullmatch(prefix):
         raise ConfigError(f"invalid environment prefix {prefix!r}")
     source = os.environ if environ is None else environ
+    reject_unknown_env(prefix, GLOBAL_ENV_SUFFIXES, source)
     raw = {
         field: source[prefix + suffix]
         for suffix, field in GLOBAL_ENV_SUFFIXES.items()
