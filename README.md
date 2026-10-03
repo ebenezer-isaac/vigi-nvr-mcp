@@ -75,12 +75,14 @@ directory is loaded if present). Start from `.env.example`. Never commit `.env`.
 | `VIGI_NVR_USERNAME` | `admin` | |
 | `VIGI_NVR_PASSWORD` | (required) | |
 | `VIGI_NVR_VERIFY_TLS` | `false` | NVRs use self-signed certificates |
+| `VIGI_NVR_TLS_FINGERPRINT_SHA256` | (unset) | Pin the cert by SHA-256 (64 hex, colons optional); fails closed on mismatch. Observe it via `nvr_status`/`--check-auth` |
 | `VIGI_NVR_TIMEOUT_SECONDS` | `10` | 1-120 |
 | `VIGI_NVR_ALLOW_WRITES` | `false` | First write key |
 | `VIGI_NVR_DRY_RUN` | `false` | Writes return the exact request without sending it |
 | `VIGI_NVR_LOGIN_DISABLED` | `false` | Freeze authentication |
 | `VIGI_NVR_MAX_LOGIN_FAILURES` | `1` | Per-process failure budget, 1-5 |
 | `VIGI_NVR_BACKUP_DIR` | `backups` | Where `nvr_backup_config` writes (mode 0600) |
+| `VIGI_NVR_STATE_DIR` | `~/.local/state/vigi-nvr-mcp/` | Persistent login-breaker state (mode 0600, per host) |
 | `VIGI_MCP_TRANSPORT` | `stdio` | `stdio` or `streamable-http` |
 | `VIGI_MCP_HOST` | `127.0.0.1` | IP literal to bind for HTTP |
 | `VIGI_MCP_PORT` | `8765` | |
@@ -117,11 +119,27 @@ systemd example is in `deploy/vigi-nvr-mcp.service.example`.
 
 `vigi-nvr-mcp --list-tools` prints the tool names without touching any device.
 
+### CLI commands and exit codes
+
+- `vigi-nvr-mcp --check-auth [--login]` — fetch the challenge (and optionally make
+  exactly one login attempt).
+- `vigi-nvr-mcp breaker --show` / `--clear` — inspect or clear the **persistent**
+  login breaker. The breaker is a per-host JSON file under `VIGI_NVR_STATE_DIR`
+  (default `~/.local/state/vigi-nvr-mcp/`, mode 0600) that survives restarts, so a
+  crash-loop with bad credentials cannot keep spending login attempts; clear it by
+  hand after fixing the credentials. Corrupt/unwritable state fails closed.
+
+Exit codes let a shell script branch on the outcome: **0** success · **1** auth
+failed · **2** config error · **3** lockout / breaker open / login disabled ·
+**4** transport error.
+
 ## Tools
 
 Every tool returns `{"success": bool, "data": ..., "error": {code, message, details} | null}`.
-Fields named `ciphertext`, `key`, `stok`, `passwd`, `pwd`, `token`, `secret` or
-`password*` are always redacted. No tool can return camera credentials.
+Credential-bearing fields are always redacted by a rule-based matcher (keys equal to
+`ciphertext, stok, token, nonce, cookie, secret, authorization, pubkey, key`, or
+*containing* `pass/pwd/secret/token/cipher`, or *ending* `_key`). No tool can return
+camera credentials.
 
 | Tool | Kind | Description |
 |---|---|---|
@@ -133,9 +151,10 @@ Fields named `ciphertext`, `key`, `stok`, `passwd`, `pwd`, `token`, `secret` or
 | `nvr_list_channels`, `nvr_get_channel` | read | Bound cameras (`chm` `added_dev`) |
 | `nvr_find_duplicate_channels` | read | Groups channels by device `uuid`; flags offline/disconnected rows as stale |
 | `nvr_backup_config` | read | Downloads the config backup (`system` `download_conf`). Not write-gated, so run it before any cleanup |
-| `nvr_remove_channel` | **write** | Unbinds a channel (`chm_del_dev`) |
+| `nvr_remove_channel` | **write** | Unbinds a channel (`chm_del_dev`); refuses a live (`online=="1"`) row unless `force=true` |
 | `nvr_move_channel` | **write** | Moves a binding to an **empty** slot (`chm_mod_dev_chn`), keeping its settings |
-| `nvr_call` | read/**write** | Raw `{"method", module: params}`; `login` and `user_management` always refused |
+| `nvr_call` | read/**write** | Catalogued gateway `(module, method, key, params)`; `login` and `user_management` always refused |
+| `nvr_raw_call` | read/**write** | Off-catalog escape hatch `(method, module, params)`; same write gates |
 
 ### Write gating
 
@@ -144,8 +163,13 @@ server and `confirm_write: true` on the call (the literal boolean). Channel
 writes add three more checks:
 
 - `expected_uuid` must match the live row, which is re-read just before writing.
+- Remove refuses a live (`online=="1"`) row unless `force=true`.
 - Move refuses an occupied target, because the firmware would silently replace it.
 - Guarded writes are serialised, so two of them cannot interleave.
+
+`VIGI_NVR_DRY_RUN=true` returns `{"dry_run": true, "request": <exact body>}` and
+sends nothing. Dry-run lives in one place (the guarded-write executor every
+mutating tool shares), so no write path can forget it.
 
 `VIGI_NVR_DRY_RUN=true` returns the exact request instead of sending it.
 Results include redacted before/after rows.

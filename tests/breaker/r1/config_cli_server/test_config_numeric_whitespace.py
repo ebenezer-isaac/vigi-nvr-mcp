@@ -25,36 +25,26 @@ def _load(**overrides: str):
     return load_device_settings(NVR_PREFIX, env)
 
 
-# The claim says every one of these invalid values must fail fast and loudly.
-@pytest.mark.parametrize(
-    "raw",
-    [
-        "443 ",   # the claim's own example: trailing whitespace
-        " 443",   # leading whitespace
-        "+443",   # explicit plus sign
-        "4_4_3",  # PEP-515 underscore grouping
-        "443.0",  # integral float syntax
-    ],
-)
-def test_port_rejects_malformed_but_coercible_strings(raw: str) -> None:
-    # Expected per the claim: a loud ConfigError. Actual: silently accepted as 443.
-    with pytest.raises(ConfigError):
-        _load(PORT=raw)
+# WON'T-FIX per orchestrator decision CC-F1 (fixer brief): lenient numeric parsing
+# of env/.env values is desirable -- a trailing space or similar typo in a systemd
+# EnvironmentFile should coerce to the intended value, not crash the server. The
+# claim was over-strict. These tests are inverted to pin the accepted, coercing
+# behaviour (and its spec wording is amended accordingly).
+@pytest.mark.parametrize("raw", ["443 ", " 443", "+443", "4_4_3", "443.0"])
+def test_port_accepts_coercible_strings(raw: str) -> None:
+    assert _load(PORT=raw).port == 443
 
 
 @pytest.mark.parametrize("raw", ["443 ", " 443", "443.0"])
-def test_mcp_port_rejects_malformed_but_coercible_strings(raw: str) -> None:
-    with pytest.raises(ConfigError):
-        load_global_settings("VIGI_MCP_", {"VIGI_MCP_PORT": raw})
+def test_mcp_port_accepts_coercible_strings(raw: str) -> None:
+    assert load_global_settings("VIGI_MCP_", {"VIGI_MCP_PORT": raw}).mcp_port == 443
 
 
 @pytest.mark.parametrize("raw", ["10 ", " 10", "1_0"])
-def test_timeout_rejects_whitespace_and_underscores(raw: str) -> None:
-    with pytest.raises(ConfigError):
-        _load(TIMEOUT_SECONDS=raw)
+def test_timeout_accepts_whitespace_and_underscores(raw: str) -> None:
+    assert _load(TIMEOUT_SECONDS=raw).timeout_seconds == 10.0
 
 
 @pytest.mark.parametrize("raw", ["3 ", " 3", "+3"])
-def test_max_login_failures_rejects_whitespace(raw: str) -> None:
-    with pytest.raises(ConfigError):
-        _load(MAX_LOGIN_FAILURES=raw)
+def test_max_login_failures_accepts_whitespace(raw: str) -> None:
+    assert _load(MAX_LOGIN_FAILURES=raw).max_login_failures == 3
