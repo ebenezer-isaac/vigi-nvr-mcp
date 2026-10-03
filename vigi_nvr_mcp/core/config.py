@@ -30,6 +30,8 @@ DEVICE_ENV_SUFFIXES: dict[str, str] = {
     "MAX_LOGIN_FAILURES": "max_login_failures",
     "DRY_RUN": "dry_run",
     "BACKUP_DIR": "backup_dir",
+    "STATE_DIR": "state_dir",
+    "TLS_FINGERPRINT_SHA256": "tls_fingerprint_sha256",
 }
 GLOBAL_ENV_SUFFIXES: dict[str, str] = {
     "TRANSPORT": "mcp_transport",
@@ -42,7 +44,23 @@ _NUMERIC_DOTTED = re.compile(r"^[\d.]+$")
 _USERNAME = re.compile(r"^[\x21-\x7e]{1,64}$")
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 _PREFIX = re.compile(r"^[A-Z][A-Z0-9]*_(?:[A-Z0-9]+_)*$")
+_HEX64 = re.compile(r"[0-9a-f]{64}")
 _HOST_ERROR = "must be a hostname or IP address (no scheme, port or path)"
+
+
+def normalise_fingerprint(value: object) -> str:
+    """Normalise a SHA-256 certificate fingerprint: strip colons/whitespace, lower-case.
+
+    Accepts the common ``AA:BB:...`` colon-separated form and bare hex, any case.
+    Raises ``ValueError`` unless the result is exactly 64 hexadecimal characters.
+    """
+    if not isinstance(value, str):
+        raise ValueError("must be a hex string")
+    cleaned = re.sub(r"[\s:]", "", value).lower()
+    if not _HEX64.fullmatch(cleaned):
+        raise ValueError("must be a SHA-256 fingerprint: 64 hex characters, optional colons")
+    return cleaned
+
 
 Port = Annotated[int, Field(ge=1, le=65535)]
 
@@ -81,6 +99,20 @@ class DeviceSettings(BaseModel):
     max_login_failures: int = Field(default=1, ge=1, le=5)
     dry_run: bool = False
     backup_dir: str = Field(default="backups", min_length=1, max_length=1024)
+    state_dir: str | None = Field(default=None, max_length=1024)
+    tls_fingerprint_sha256: str | None = None
+
+    @field_validator("tls_fingerprint_sha256", mode="before")
+    @classmethod
+    def _validate_fingerprint(cls, value: object) -> str | None:
+        return None if value is None else normalise_fingerprint(value)
+
+    @field_validator("state_dir")
+    @classmethod
+    def _validate_state_dir(cls, value: str | None) -> str | None:
+        if value is not None and (_CONTROL_CHARS.search(value) or not value.strip()):
+            raise ValueError("must be a non-empty path without control characters")
+        return value
 
     @field_validator("host", mode="before")
     @classmethod
@@ -154,8 +186,20 @@ def host_is_set(prefix: str, environ: Mapping[str, str] | None = None) -> bool:
 
 
 def load_device_settings(prefix: str, environ: Mapping[str, str] | None = None) -> DeviceSettings:
-    """Build DeviceSettings from ``<prefix>*`` variables. Fails fast."""
+    """Build DeviceSettings from ``<prefix>*`` variables. Fails fast.
+
+    Any variable that starts with ``prefix`` but is not a documented setting is an
+    error (a silently-ignored typo could leave TLS verification or a write gate in
+    an unintended state), so the unknown names are reported rather than dropped.
+    """
     source = os.environ if environ is None else environ
+    known = {prefix + suffix for suffix in DEVICE_ENV_SUFFIXES}
+    unknown = sorted(k for k in source if k.startswith(prefix) and k not in known)
+    if unknown:
+        raise ConfigError(
+            f"Unknown {prefix}* variable(s): {', '.join(unknown)}. "
+            "Only documented settings are accepted; check for typos."
+        )
     raw: dict[str, object] = {
         field: source[prefix + suffix]
         for suffix, field in DEVICE_ENV_SUFFIXES.items()

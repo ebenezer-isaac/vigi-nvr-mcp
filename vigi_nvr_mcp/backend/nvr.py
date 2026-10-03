@@ -78,6 +78,7 @@ class NvrBackend:
             "lock_seconds_left": challenge.sec_left,
             "key_present": challenge.key is not None,
             "nonce_present": challenge.nonce is not None,
+            "tls_fingerprint_observed": self.context.client.observed_fingerprint,
         }
 
     def _policy(self) -> dict[str, Any]:

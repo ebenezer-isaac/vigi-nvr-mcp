@@ -12,6 +12,17 @@ from vigi_nvr_mcp.tools import ToolContext
 from vigi_nvr_mcp.transport import NvrTransport
 
 
+@pytest.fixture(autouse=True)
+def _isolate_breaker_state(tmp_path_factory, monkeypatch):
+    """Every test gets a fresh, throwaway login-breaker state dir.
+
+    Uses a sibling temp dir (not the test's ``tmp_path``) so tests that inspect
+    their own ``tmp_path`` are unaffected. Keeps the persistent breaker out of the
+    real ``~/.local/state`` and isolated between tests (each starts closed)."""
+    state = tmp_path_factory.mktemp("breaker-state")
+    monkeypatch.setattr("vigi_nvr_mcp.core.breaker.default_state_dir", lambda _app: state)
+
+
 @pytest.fixture
 def fake() -> FakeNvr:
     return FakeNvr()

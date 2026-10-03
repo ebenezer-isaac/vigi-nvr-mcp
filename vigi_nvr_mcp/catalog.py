@@ -23,17 +23,54 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
+from .core.errors import ConfigError, InvalidInput
+
 # --- error-code catalog -------------------------------------------------------
+
+EXPECTED_ERRCODES = 555
+EXPECTED_MODULES = 61
+EXPECTED_CALLS = 586
+EXPECTED_MUTATING = 217
 
 
 @lru_cache(maxsize=1)
-def code_to_symbol() -> MappingProxyType[int, str]:
+def code_to_symbol() -> MappingProxyType[int, tuple[str, ...]]:
+    """Map each numeric error code to ALL its symbols (tuple), validated at load.
+
+    ``errcodes.json`` is ``symbol -> code`` with five codes (incl. ``-1``) carrying
+    two symbols each; inverting keeps every symbol rather than silently dropping
+    one. A missing, truncated or tampered file (wrong symbol count) raises
+    ``ConfigError`` loudly here, not as a mislabelled client error inside a tool.
+    """
     text = resources.files(__package__).joinpath("data/errcodes.json").read_text("utf-8")
-    return MappingProxyType({code: symbol for symbol, code in json.loads(text).items()})
+    try:
+        table = json.loads(text)
+    except ValueError:
+        raise ConfigError(
+            "errcodes.json is not valid JSON; the error catalog is corrupt."
+        ) from None
+    if not isinstance(table, dict) or len(table) != EXPECTED_ERRCODES:
+        got = len(table) if isinstance(table, dict) else "a non-object"
+        raise ConfigError(
+            f"errcodes.json is corrupt: expected {EXPECTED_ERRCODES} symbols, got {got}."
+        )
+    inverted: dict[int, tuple[str, ...]] = {}
+    for symbol, code in table.items():
+        inverted[code] = (*inverted.get(code, ()), symbol)
+    return MappingProxyType(inverted)
 
 
 def symbol_for(code: int) -> str | None:
-    return code_to_symbol().get(code)
+    symbols = code_to_symbol().get(code)
+    return symbols[0] if symbols else None
+
+
+def code_to_symbols(code: int) -> tuple[str, ...]:
+    """Every documented symbol for ``code`` (a tuple; empty if unknown).
+
+    Colliding codes keep all their symbols, so ``-1`` returns both
+    ``EINVCLOUDERRORGENERIC`` and ``ERR_PERCENT`` rather than an arbitrary one."""
+    return code_to_symbol().get(code, ())
 
 
 # --- endpoint catalog ---------------------------------------------------------
@@ -61,50 +98,51 @@ class CallSpec(BaseModel):
     response_shape_hint: str | None = None
 
 
-def _validate_params(params: Any) -> dict[str, Any] | None:
+def validate_params(params: Any) -> dict[str, Any] | None:
     """Validate caller-supplied params against the gateway's safety rules.
 
-    Rejects (before any I/O) non-objects, nesting deeper than six levels, more
-    than 200 keys in total, strings over 4 KB, control characters, keys outside
-    ``[A-Za-z0-9_.-]{1,64}`` and non-JSON values (including NaN/Infinity).
-    Returns the params unchanged (never mutated).
+    Rejects (before any I/O, and before any recursion-prone work) non-objects,
+    nesting deeper than six levels, more than 200 keys in total, strings over
+    4 KB, control characters, keys outside ``[A-Za-z0-9_.-]{1,64}`` and non-JSON
+    values (including NaN/Infinity). Raises :class:`InvalidInput` (a ``ValueError``)
+    so it maps to an ``INVALID_INPUT`` envelope. Returns the params unchanged.
     """
     if params is None:
         return None
     if not isinstance(params, dict):
-        raise ValueError("params must be an object or null")
+        raise InvalidInput("params must be an object or null")
 
     key_count = 0
 
     def walk(obj: Any, depth: int) -> None:
         nonlocal key_count
         if depth > MAX_DEPTH:
-            raise ValueError(f"params nested deeper than {MAX_DEPTH} levels")
+            raise InvalidInput(f"params nested deeper than {MAX_DEPTH} levels")
         if isinstance(obj, dict):
             for key, value in obj.items():
                 if not isinstance(key, str) or not _KEY_RE.fullmatch(key):
-                    raise ValueError(
+                    raise InvalidInput(
                         f"invalid parameter key {key!r}: must match [A-Za-z0-9_.-]{{1,64}}"
                     )
                 key_count += 1
                 if key_count > MAX_KEYS:
-                    raise ValueError(f"params has more than {MAX_KEYS} keys")
+                    raise InvalidInput(f"params has more than {MAX_KEYS} keys")
                 walk(value, depth + 1)
         elif isinstance(obj, list):
             for item in obj:
                 walk(item, depth + 1)
         elif isinstance(obj, str):
             if len(obj.encode("utf-8")) > MAX_STRING_BYTES:
-                raise ValueError("string value exceeds 4 KB")
+                raise InvalidInput("string value exceeds 4 KB")
             if _CONTROL.search(obj):
-                raise ValueError("string value contains control characters")
+                raise InvalidInput("string value contains control characters")
         elif isinstance(obj, bool) or obj is None or isinstance(obj, int):
             return
         elif isinstance(obj, float):
             if not math.isfinite(obj):
-                raise ValueError("number must be finite (no NaN or Infinity)")
+                raise InvalidInput("number must be finite (no NaN or Infinity)")
         else:
-            raise ValueError(f"params contains a non-JSON value of type {type(obj).__name__}")
+            raise InvalidInput(f"params contains a non-JSON value of type {type(obj).__name__}")
 
     walk(params, 1)
     return params
@@ -129,7 +167,24 @@ class Catalog:
     @classmethod
     def load(cls) -> Catalog:
         text = resources.files(__package__).joinpath("data/endpoints.json").read_text("utf-8")
-        return cls(json.loads(text))
+        try:
+            data = json.loads(text)
+        except ValueError:
+            raise ConfigError(
+                "endpoints.json is not valid JSON; the call catalog is corrupt."
+            ) from None
+        if not isinstance(data, dict) or "modules" not in data:
+            raise ConfigError("endpoints.json is corrupt: no 'modules' section.")
+        catalog = cls(data)
+        actual = (catalog.module_count, catalog.call_count, catalog.mutating_count)
+        expected = (EXPECTED_MODULES, EXPECTED_CALLS, EXPECTED_MUTATING)
+        if actual != expected:
+            raise ConfigError(
+                "endpoints.json is corrupt: expected "
+                f"{expected[0]} modules / {expected[1]} calls / {expected[2]} mutating, "
+                f"got {actual[0]} / {actual[1]} / {actual[2]}."
+            )
+        return catalog
 
     @property
     def module_count(self) -> int:
@@ -193,11 +248,11 @@ class Catalog:
         spec carries a ``params_example`` shape, top-level keys absent from it
         are rejected unless ``allow_extra=True``.
         """
-        validated = _validate_params(params)
+        validated = validate_params(params)
         if validated and spec.params_example:
             unknown = sorted(set(validated) - set(spec.params_example))
             if unknown and not allow_extra:
-                raise ValueError(
+                raise InvalidInput(
                     f"unknown parameter(s) {unknown} for {spec.module}/{spec.method}/{spec.key}; "
                     "pass allow_extra=true to send them anyway"
                 )
@@ -207,3 +262,13 @@ class Catalog:
 @lru_cache(maxsize=1)
 def get_catalog() -> Catalog:
     return Catalog.load()
+
+
+def validate_catalogs() -> None:
+    """Force both vendored catalogs to load and validate at startup.
+
+    Raises ``ConfigError`` loudly if either file is missing, truncated or tampered,
+    so corruption surfaces at startup rather than as a mislabelled error inside a
+    tool call."""
+    code_to_symbol()
+    get_catalog()

@@ -326,14 +326,16 @@ async def test_move_rereads_live_state_before_writing(wctx, fake, table) -> None
 
 
 async def test_backup_downloads_and_writes_private_file(make_ctx, fake, table, tmp_path) -> None:
-    fake.files = {f"/stok={FAKE_STOK_1}/backup/config.bin": b"\x01CONFIG\x02"}
+    blob = b"\x01CONFIG\x02" + bytes(2048)
+    fake.files = {f"/stok={FAKE_STOK_1}/backup/config.bin": blob}
     bctx = make_ctx(BACKUP_DIR=str(tmp_path / "bk"))
     result = await backup.backup_config(bctx)
     assert result["success"] is True, result
     data = result["data"]
     path = Path(data["path"])
-    assert path.read_bytes() == b"\x01CONFIG\x02"
-    assert data["bytes"] == len(b"CONFIG") == 8
+    assert path.read_bytes() == blob
+    assert data["size"] == len(blob)
+    assert data["content_type"] == "application/octet-stream"
     assert len(data["sha256"]) == 64
     assert fake.api_requests[-1][1] == {"method": "do", "system": {"download_conf": None}}
     if os.name == "posix":
@@ -342,7 +344,7 @@ async def test_backup_downloads_and_writes_private_file(make_ctx, fake, table, t
 
 async def test_backup_is_not_write_gated(ctx, fake, table, monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
-    fake.files = {f"/stok={FAKE_STOK_1}/backup/config.bin": b"x"}
+    fake.files = {f"/stok={FAKE_STOK_1}/backup/config.bin": bytes(2048)}
     assert ctx.settings.allow_writes is False
     assert (await backup.backup_config(ctx))["success"] is True
 

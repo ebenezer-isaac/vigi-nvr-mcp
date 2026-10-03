@@ -5,8 +5,10 @@ no option to include them. The two mutating tools (remove, move) are guarded by:
 
 1. the two-key write gate (``VIGI_NVR_ALLOW_WRITES`` + ``confirm_write=true``);
 2. ``expected_uuid`` must match the live row, re-read immediately before writing;
-3. move refuses an occupied target slot (the firmware would silently replace it);
-4. ``VIGI_NVR_DRY_RUN=true`` returns the exact request without sending it.
+3. remove refuses a live (``online=="1"``) row unless ``force=true``;
+4. move refuses an occupied target slot (the firmware would silently replace it);
+5. ``VIGI_NVR_DRY_RUN=true`` returns the exact request without sending it (the
+   central guarded-write executor does this for every mutating tool).
 
 Both return the before/after rows (redacted). Take ``nvr_backup_config`` first.
 """
@@ -20,11 +22,18 @@ from mcp.server.fastmcp import FastMCP
 
 from .. import client as client_module
 from ..core.envelope import fail
-from ..core.errors import NotFound, PreconditionFailed
+from ..core.errors import InvalidInput, NotFound, PreconditionFailed
 from ..core.redact import redact
 from ..core.write_gate import check_write_gate
 from ..planning import build_cleanup_plan
 from . import ToolContext, run_tool
+
+
+class ChannelOnline(PreconditionFailed):
+    """Refused removing an online (live) channel without ``force=True``."""
+
+    kind = "CHANNEL_ONLINE"
+
 
 CHANNEL_ID_RE = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
 UUID_RE = re.compile(r"^[\x21-\x7e]{1,128}$")
@@ -83,16 +92,16 @@ def find_duplicates(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 def validate_channel_id(channel_id: object) -> str:
     if isinstance(channel_id, bool) or not isinstance(channel_id, str | int):
-        raise ValueError("channel id must be 1-64 characters of [A-Za-z0-9_-]")
+        raise InvalidInput("channel id must be 1-64 characters of [A-Za-z0-9_-]")
     text = str(channel_id).strip()
     if not CHANNEL_ID_RE.fullmatch(text):
-        raise ValueError("channel id must be 1-64 characters of [A-Za-z0-9_-]")
+        raise InvalidInput("channel id must be 1-64 characters of [A-Za-z0-9_-]")
     return text
 
 
 def validate_uuid(value: object) -> str:
     if not isinstance(value, str) or not UUID_RE.fullmatch(value.strip()):
-        raise ValueError("expected_uuid must be 1-128 printable characters")
+        raise InvalidInput("expected_uuid must be 1-128 printable characters")
     return value.strip()
 
 
@@ -155,7 +164,11 @@ async def plan_channel_cleanup(ctx: ToolContext) -> dict[str, Any]:
 
 
 async def remove_channel(
-    ctx: ToolContext, channel_id: str | int, expected_uuid: str, confirm_write: bool = False
+    ctx: ToolContext,
+    channel_id: str | int,
+    expected_uuid: str,
+    confirm_write: bool = False,
+    force: bool = False,
 ) -> dict[str, Any]:
     try:
         cid, uuid = validate_channel_id(channel_id), validate_uuid(expected_uuid)
@@ -165,12 +178,17 @@ async def remove_channel(
     refusal = check_write_gate(ctx.settings, method, confirm_write)
     if refusal is not None:
         return refusal
+    request = {"method": method, module: {action_name: {"ids": [cid]}}}
 
     async def action() -> dict[str, Any]:
         before = _require_uuid(_find(await ctx.client.list_channels(), cid), cid, uuid)
-        request = {"method": method, module: {action_name: {"ids": [cid]}}}
-        if ctx.settings.dry_run:
-            return {"dry_run": True, "request": request, "before": _public(before), "after": None}
+        if not force and str(before.get("online", "")) == "1":
+            raise ChannelOnline(
+                f"Channel '{cid}' is online (a live camera). Refusing to unbind it without "
+                "force=true; confirm it is really a ghost, or pass force=true to override.",
+                reason="CHANNEL_ONLINE",
+                context={"channel_id": cid, "online": str(before.get("online", ""))},
+            )
         response = await ctx.client.delete_channels([cid])
         after = _find(await ctx.client.list_channels(), cid)
         return {
@@ -182,7 +200,7 @@ async def remove_channel(
             "removed": after is None or str(after.get("uuid", "")) != uuid,
         }
 
-    return await run_tool("nvr_remove_channel", lambda: ctx.writes.run(action))
+    return await run_tool("nvr_remove_channel", lambda: ctx.writes.run(request, action))
 
 
 async def move_channel(
@@ -203,6 +221,7 @@ async def move_channel(
     refusal = check_write_gate(ctx.settings, method, confirm_write)
     if refusal is not None:
         return refusal
+    request = {"method": method, module: {action_name: {"old_id": src, "new_id": dst}}}
 
     async def action() -> dict[str, Any]:
         rows = await ctx.client.list_channels()
@@ -215,10 +234,7 @@ async def move_channel(
                 reason="TARGET_OCCUPIED",
                 context={"new_id": dst, "occupant": _public(occupant)},
             )
-        request = {"method": method, module: {action_name: {"old_id": src, "new_id": dst}}}
         before = {"source": _public(source), "target": None}
-        if ctx.settings.dry_run:
-            return {"dry_run": True, "request": request, "before": before, "after": None}
         response = await ctx.client.move_channel(src, dst)
         after_rows = await ctx.client.list_channels()
         after = {
@@ -236,7 +252,7 @@ async def move_channel(
             "moved": moved,
         }
 
-    return await run_tool("nvr_move_channel", lambda: ctx.writes.run(action))
+    return await run_tool("nvr_move_channel", lambda: ctx.writes.run(request, action))
 
 
 def register(mcp: FastMCP, ctx: ToolContext) -> list[str]:
@@ -269,13 +285,14 @@ def register(mcp: FastMCP, ctx: ToolContext) -> list[str]:
 
     @mcp.tool(name="nvr_remove_channel")
     async def _remove(
-        channel_id: str, expected_uuid: str, confirm_write: bool = False
+        channel_id: str, expected_uuid: str, confirm_write: bool = False, force: bool = False
     ) -> dict[str, Any]:
         """Unbind one channel (chm_del_dev). DESTRUCTIVE. Requires
         VIGI_NVR_ALLOW_WRITES=true, confirm_write=true and expected_uuid equal to
-        the live row's uuid. Honours VIGI_NVR_DRY_RUN. Run nvr_backup_config first.
-        Returns before/after rows."""
-        return await remove_channel(ctx, channel_id, expected_uuid, confirm_write)
+        the live row's uuid. Refuses a row whose live online=="1" (a connected
+        camera) unless force=true. Honours VIGI_NVR_DRY_RUN. Run nvr_backup_config
+        first. Returns before/after rows."""
+        return await remove_channel(ctx, channel_id, expected_uuid, confirm_write, force)
 
     @mcp.tool(name="nvr_move_channel")
     async def _move(

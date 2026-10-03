@@ -89,10 +89,18 @@ class NvrTransport:
             timeout_seconds=settings.timeout_seconds,
             headers=HEADERS,
             http_transport=http_transport,
+            tls_fingerprint=settings.tls_fingerprint_sha256,
+            host=settings.host,
+            port=settings.port,
         )
 
     async def aclose(self) -> None:
         await self._http.aclose()
+
+    @property
+    def observed_fingerprint(self) -> str | None:
+        """The peer certificate's observed SHA-256 (None until a TLS request is made)."""
+        return self._http.observed_fingerprint
 
     async def post_preauth(
         self, body: dict[str, Any], *, accept_codes: Collection[int] = (0,)

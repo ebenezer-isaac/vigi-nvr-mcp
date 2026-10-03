@@ -62,6 +62,10 @@ skip_covered = false
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+# Breaker round tests are imported verbatim from the breaker branches and contain
+# deliberate adversarial constructs (e.g. a Cyrillic homoglyph key); they are run
+# by pytest but not held to our lint/format style.
+extend-exclude = ["tests/breaker"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "S", "SIM", "RUF"]

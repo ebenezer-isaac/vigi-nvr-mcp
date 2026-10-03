@@ -17,7 +17,7 @@ from urllib.parse import unquote
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from ..core.errors import ProtocolError
+from ..core.errors import InvalidInput, ProtocolError
 
 MIN_CHANNEL = 1
 MAX_CHANNEL = 16
@@ -96,7 +96,7 @@ def parse_input(model: type[BaseModel], **kwargs: Any) -> BaseModel:
         reasons = "; ".join(
             f"{'.'.join(str(p) for p in e['loc']) or 'input'}: {e['msg']}" for e in exc.errors()
         )
-        raise ValueError(reasons) from None
+        raise InvalidInput(reasons) from None
 
 
 def require_section(reply: Any, module: str) -> dict[str, Any]:
