@@ -1,0 +1,97 @@
+# 01 — vigi-nvr-mcp (standalone repo `E:/projects-working-dir/vigi-nvr-mcp`, package `vigi_nvr_mcp`)
+
+Target: VIGI NVR1016H(UN), fw 1.1.3 Build 260727. Verified protocol facts live in `docs/protocol/vigi-nvr.md` (written in N1 from the discovery files). Read `00-MASTER-PLAN.md` §1–§2 first; every rule there applies.
+
+Inputs available to agents (scratchpad `nvr/discovery/`, orchestrator copies the needed ones into the repo under `vigi_nvr_mcp/catalog/` and `tests/fixtures/vigi_nvr/`):
+- `auth-vectors.json` — byte-exact login vectors (dummy password/nonce). **Authoritative.**
+- `endpoints.json` — 61 modules, 586 calls, 217 mutating; `_about`/`_conventions` keys describe the format.
+- `_errcodes.json` — firmware error-code table.
+- `auth-flow.md`, `channel-management.md`, `SUMMARY.md` — when delivered.
+
+## Protocol (do not re-derive)
+
+- Pre-auth: `POST https://<host>:<port>/` ; authed: `POST https://<host>:<port>/stok=<token>/ds`. Body `{"method":"get|set|do|add|delete|…","<module>":{…}}`. Headers `Content-Type: application/json; charset=UTF-8`, `X-Requested-With: XMLHttpRequest`. Response always has `error_code` (0 = ok).
+- Challenge: `POST / {"user_management":{"get_encrypt_info":null},"method":"do"}` → `{"error_code":-40401,"data":{"code":…,"encrypt_type":["1","2"],"key":"<URL-encoded base64 SPKI DER RSA-1024>","nonce":"<8 chars>", "time"?:int, "max_time"?:int}}`.
+- Login: `{"method":"do","login":{"username":u,"password":ENC,"passwdType":"md5","encrypt_type":"2"}}` → `{"error_code":0,"stok":"<32 hex>","user_group":"root"}`.
+  `md5_auth_pwd(p) = MD5("TPCQ75NF2Y:"+p).hexdigest().upper()`; plaintext = `md5_auth_pwd(p) + ":" + nonce`; `ENC = quote(b64(RSA_PKCS1v15(pub, plaintext)), safe="")`. If the server offers only `["1"]`: `encrypt_type:"1"` and `password = md5_auth_pwd(p)` (no RSA).
+- Failed login → `error_code -40401` with `data.time`/`data.max_time` (attempt counter; lockout at max). Expired/invalid token on `/stok=…/ds` → `-40401` too; distinguish by **which URL** was called.
+- `securityEncode`/`orgAuthPwd` are **not** login; they are the media-stream password (`pullStreamInfo.password`) — out of scope.
+
+## Phase N1 — core + auth (one agent)
+
+**Deliverables**
+- Everything in Master Plan §3 `core/` (self-contained, NVR-agnostic, with `core/README.md` stating it is the template the other two repos copy verbatim), fully implemented and tested (≥ 90% coverage on `core/`).
+- `vigi_nvr_mcp/crypto.py`: `md5_auth_pwd`, `build_login_plaintext(md5_hex, nonce)`, `load_public_key(url_encoded_b64_spki) -> RSAPublicKey`, `rsa_encrypt_pkcs1v15_urlsafe(pub, plaintext) -> str`. Pure.
+- `vigi_nvr_mcp/auth.py`: `NvrAuthenticator(settings, transport, breaker)`: `get_challenge() -> Challenge` (pydantic: code, encrypt_types, key, nonce, time, max_time), `login() -> Token` (exactly one HTTP login; on failure raises `AuthFailed(time,max_time)` and `breaker.record_failure`), `token` cache, `invalidate()`. Honour `login_disabled` and breaker **before** any network call.
+- `vigi_nvr_mcp/transport.py`: `NvrTransport(HttpTransport)`: `post_preauth(body)`, `post_api(token, body)`; maps non-zero `error_code` to `NvrApiError(code, meaning)` using the error table; raises `TokenExpired` on `-40401` from `/ds`.
+- `vigi_nvr_mcp/client.py`: `NvrClient`: `call(method, module, params) -> dict` with: serialised execution, lazy login, **single** re-login on `TokenExpired` (then re-raise), never on `AuthFailed`.
+- `vigi_nvr_mcp/errors.py`: `NVR_ERROR_CODES: dict[int, str]` imported from `_errcodes.json` (vendored as `vigi_nvr_mcp/catalog/errcodes.json`), `NvrApiError`.
+- `vigi_nvr_mcp/backend.py`: `VigiNvrBackend(DeviceBackend)`; `healthcheck()` = challenge only (no login) returning encrypt types + counters.
+- Tools: `nvr_check_auth` (challenge only; shows `time/max_time` if present), `nvr_login` (explicit; one attempt; returns `user_group` only — never the token), `nvr_get_device_info` (`device_info` / `basic_info`).
+- `tests/fixtures/vigi_nvr/auth_vectors.json` (copied) + tests asserting every field of it; RSA round-trip with a generated key; URL-encoding of `+ / =`; key `%2b` decoding; encrypt_type 1 path; challenge parsing with/without `time`.
+- Lockout tests: failed login → no retry, breaker written, `AuthFailed(time=9,max_time=10)` surfaced; `login_disabled` → no HTTP call at all (assert transport mock not called); breaker open → same; expired token mid-call → exactly one re-login then success; expired token twice → `TokenExpired` raised, no third login.
+- `docs/protocol/vigi-nvr.md` — the protocol section above plus the error-code table.
+- `scripts/gate.py`, `scripts/check_no_secrets.py`, `pyproject.toml`, `.env.example`, `.gitignore`, `LICENSE`, `README.md` skeleton, `deploy/vigi-nvr-mcp.service.example`.
+
+**Done when** gate passes; `--list-tools` shows `nvr_status`, `nvr_check_auth`, `nvr_login`, `nvr_get_device_info`.
+
+## Phase N2 — catalog gateway (comprehensive coverage, one agent)
+
+The inventory is the coverage. Every one of the 586 calls becomes reachable, validated and write-gated through one gateway, without 586 registrations.
+
+**Deliverables**
+- `vigi_nvr_mcp/catalog/endpoints.json` vendored verbatim (first run `check_no_secrets` on it; if any real address slipped into an example, replace with `192.0.2.x` and note it in the commit).
+- `vigi_nvr_mcp/catalog.py`: `Catalog.load()`, `modules()`, `calls(module)`, `find(module, method, key) -> CallSpec` (pydantic: module, method, key, params_example, mutates, ui_context, response_shape_hint), `build_body(spec, params)`; param validation: params must be JSON-serialisable, max depth 6, max 200 keys, strings ≤ 4 KB, no control chars, keys must be `[A-Za-z0-9_.-]{1,64}`; if `params_example` has a shape, unknown top-level keys are rejected unless `allow_extra=True`.
+- Tools: `nvr_list_modules()` (name, description, call count, mutating count), `nvr_list_calls(module)` , `nvr_describe_call(module, method, key)` (returns the spec incl. example), `nvr_call(module, method, key, params, confirm_write=False, allow_extra=False)`: refuses unknown `(module, method, key)` with the three nearest matches; mutating (per catalog **or** method ∉ {`get`}) requires both write gates; supports `VIGI_NVR_DRY_RUN` (returns the exact body under `data.dry_run` and does not send).
+- `nvr_raw_call(method, module, params, confirm_write)` for calls not in the catalog — **always** write-gated unless `method == "get"`, and logged at WARNING.
+- Tests: catalog loads with `module_count == 61` and `len(all calls) == 586` and `mutating == 217` (read those numbers from the file's `_about`/computed, assert equality so a trimmed file fails); every mutating spec is refused without gates and sends nothing; a `get` spec sends the exact expected body; dry-run; fuzz 50 random specs → `build_body` output is valid JSON and contains `method`; adversarial params (depth bomb, 10k keys, 1 MB string, NUL bytes) rejected before any I/O.
+
+**Done when** `nvr_call` can reach every catalogued call in tests via a fake transport and the count assertions pass.
+
+## Phase N3 — typed read tools (one agent; may split N3a/N3b if > 14 files)
+
+Hand-written, LLM-friendly tools for the high-value reads. Each returns a normalised pydantic model under `data` plus `raw` when `include_raw=True`. All use `client.call`; none bypass the catalog validation.
+
+| Tool | Module / key | Notes |
+|---|---|---|
+| `nvr_get_system_info` | `system`, `device_info`, `function.module_spec` | model, fw, uptime, max_channels, codecs |
+| `nvr_get_network` | `network`, `port`, `uhttpd`, `media_server`, `onvif_server` (reads) | IP/mask/gw/DNS, service ports |
+| `nvr_list_channels` | `chm.added_dev` | normalised rows: id, name, alias, ip, port, protocol, online, conn_status (+meaning), auth_result (+meaning), uuid, model; **ciphertext never returned**; `include_offline_only` filter |
+| `nvr_find_duplicate_channels` | derived | group by `uuid`; a row is a **ghost** iff another row with the same uuid exists AND this row has `online=="0"` AND `conn_status != "0"` AND (`auth_result == "1"` OR name equals its generic model name); output `{uuid, keep: row, ghosts: [rows]}` with a human explanation. Unit-test on an anonymised fixture that reproduces the owner's pattern (14 rows, 6 ghosts across 3 uuids, 3 real-but-offline rows, 2 rows legitimately sharing a uuid that must NOT be flagged because both are online). |
+| `nvr_get_video_config` | `video.main_res/minor_res`, `advance_settings` | per-channel resolution/codec/bitrate |
+| `nvr_get_image_config(channel)` | `image`, `OSD`, `cover`, `ROI` | |
+| `nvr_get_detection_config(channel, kind)` | `motion_detection`, `people_detection`, `vehicle_detection`, `linecross_detection`, `intrusion_detection`, `regionentrance_detection`, `regionexiting_detection`, `loitering_detection`, `abandonandtaken_detection`, `scenechange_detection`, `audioexception_detection`, `tamper_detection` | `kind` enum; read-only |
+| `nvr_get_storage` | `harddisk_manage` reads, `plan_advance`, `record_plan` | disks: status/capacity/free/health; overwrite policy |
+| `nvr_get_recording_status` | `record_control` reads + `harddisk_manage` + `chm` | per channel: recording on/off, schedule present, last error; **this is the "does footage exist" tool** |
+| `nvr_search_recordings(channel, date)` | `playback` search | list segments (start, end, type) |
+| `nvr_list_events(since)` | `unusual_detection`, `alarm_server`, chm `chm_get_msg_alarm_list_extend` | best-effort normalised |
+| `nvr_get_users` | `user_management` reads | names/groups only |
+| `nvr_get_firewall` | `firewall`, `protocol` reads | |
+| `nvr_get_cloud_status` | `cloud_status`, `cloud_config` reads | |
+| `nvr_get_time` | `system` time/NTP | |
+
+Tests per tool: fixture response → normalised model; malformed/missing fields → `ProtocolError` envelope not exception; unexpected `error_code` → mapped meaning; URL-encoded `%20` names decoded.
+
+## Phase N4 — channel management writes (one agent; **blocked on `channel-management.md`**)
+
+Inputs: the discovery doc's verified delete/add/modify envelopes and `conn_status`/`auth_result` meanings.
+
+**Deliverables**
+- `nvr_remove_channel(channel_id, expected_uuid, confirm_write)`: refuses unless the live row's `uuid` equals `expected_uuid` (prevents removing the wrong slot after a renumber); refuses if the row is `online=="1"` unless `force=True`; dry-run supported; after the write re-reads `added_dev` and returns before/after rows.
+- If the discovery doc verifies a renumber/move primitive: `nvr_move_channel(from_id, to_id, expected_uuid, confirm_write)` with the same guards. If not: `nvr_add_channel(ip, port, protocol, username, password, name, confirm_write)` + `nvr_set_channel_name(id, name)`; `password` is accepted only via a `VIGI_NVR_CAMERA_PASSWORDS` env map (`name=pw;…`) referenced by name, never as a tool argument that would appear in logs.
+- `nvr_plan_channel_cleanup()` (read-only): from `nvr_find_duplicate_channels` and the free-slot rules the doc verifies, produce an ordered plan: `[{step, tool, args, rationale}]` to remove all ghosts and re-home real cameras into slots 1–8, with the lowest-risk order (ghosts first, then moves/re-adds, one at a time, verify after each).
+- Tests: guards (uuid mismatch, online without force, writes disabled, dry-run body equality against the doc's envelope), plan generation on the anonymised fixture (expected exact step list), state machine (token expiry between steps, failure mid-plan leaves a resumable plan).
+
+## Phase N5 — LIVE verification (orchestrator-run, owner present)
+
+1. `vigi-nvr-mcp --check-auth` → challenge only.
+2. `vigi-nvr-mcp --check-auth --login` → **one** login; expect `user_group: root`.
+3. `nvr_get_device_info`, `nvr_list_channels`, `nvr_find_duplicate_channels` → compare against the known table.
+4. `nvr_plan_channel_cleanup` → review every step's body in dry-run.
+5. Execute the plan **one step at a time** with `confirm_write=True`, re-listing after each; stop on any surprise.
+6. `nvr_get_recording_status` for all remaining channels.
+Record results (sanitised) as `docs/protocol/vigi-nvr-verified.md`.
+
+## Phase N6 — docs & deploy (one agent)
+
+README sections for the NVR backend (tools table, write gating, lockout callout, catalog gateway usage, examples), `docs/protocol/vigi-nvr.md` finalised, `deploy/` unit + `install.md` (non-root user, env file perms, loopback bind, Tailscale access), CHANGELOG. No secrets.
