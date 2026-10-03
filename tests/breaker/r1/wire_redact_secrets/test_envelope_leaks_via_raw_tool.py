@@ -23,7 +23,7 @@ from vigi_nvr_mcp.auth import Authenticator
 from vigi_nvr_mcp.client import NvrClient
 from vigi_nvr_mcp.core.config import load_device_settings
 from vigi_nvr_mcp.tools import ToolContext
-from vigi_nvr_mcp.tools.raw import nvr_call
+from vigi_nvr_mcp.tools.raw import nvr_raw_call  # N1 nvr_call -> N2 nvr_raw_call
 from vigi_nvr_mcp.transport import NvrTransport
 
 LEAKY_REPLY = {
@@ -63,7 +63,7 @@ async def test_nvr_call_envelope_contains_no_plaintext_secret() -> None:
         client=NvrClient(settings, transport, Authenticator(settings, transport)),
     )
     try:
-        envelope = await nvr_call(ctx, "get", "network", None, False)
+        envelope = await nvr_raw_call(ctx, "get", "network", None, False)
     finally:
         await transport.aclose()
 
