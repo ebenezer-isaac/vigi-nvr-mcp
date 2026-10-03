@@ -3,15 +3,15 @@ requires = ["hatchling>=1.24"]
 build-backend = "hatchling.build"
 
 [project]
-name = "vigi-nvr-mcp"
+name = "tplink-local-mcp"
 version = "0.1.0"
-description = "Model Context Protocol server for TP-Link VIGI NVRs (read-first, write-gated, lockout-aware)."
+description = "Local, browser-free MCP server for TP-Link VIGI NVRs, Archer routers and Easy Smart switches."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
 authors = [{ name = "Ebenezer Isaac" }]
-keywords = ["mcp", "tp-link", "vigi", "nvr", "cctv"]
+keywords = ["mcp", "tp-link", "vigi", "nvr", "archer", "easy-smart", "cctv"]
 classifiers = [
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.11",
@@ -38,13 +38,13 @@ dev = [
 ]
 
 [project.scripts]
-vigi-nvr-mcp = "vigi_nvr_mcp.__main__:main"
+tplink-local-mcp = "tplink_local_mcp.__main__:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["vigi_nvr_mcp"]
+packages = ["tplink_local_mcp"]
 
 [tool.hatch.build.targets.sdist]
-include = ["vigi_nvr_mcp", "tests", "scripts", "README.md", "LICENSE", ".env.example"]
+include = ["tplink_local_mcp", "tests", "scripts", "README.md", "LICENSE", ".env.example"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -52,7 +52,7 @@ asyncio_mode = "auto"
 addopts = "-ra"
 
 [tool.coverage.run]
-source = ["vigi_nvr_mcp"]
+source = ["tplink_local_mcp"]
 branch = true
 
 [tool.coverage.report]

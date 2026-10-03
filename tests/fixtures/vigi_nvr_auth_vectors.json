@@ -1,0 +1,33 @@
+{
+  "_comment": "VIGI NVR1016H fw 1.1.3 login vectors, computed by executing the vendor web UI's own JavaScript (class.js md5AuthPwd, jquery $.dynEncryptPwd, jsencrypt). Dummy password and nonce only.",
+  "inputs": {
+    "password": "TestPass123",
+    "nonce": "abcdefgh",
+    "username": "admin"
+  },
+  "md5_input_string": "TPCQ75NF2Y:TestPass123",
+  "vendor_md5_lowercase": "f8a44bd7a62bec2512de5eb295a68997",
+  "md5AuthPwd": "F8A44BD7A62BEC2512DE5EB295A68997",
+  "pre_rsa_plaintext_encrypt_type_2": "F8A44BD7A62BEC2512DE5EB295A68997:abcdefgh",
+  "pre_rsa_plaintext_formula": "md5AuthPwd(password) + \":\" + nonce",
+  "pre_rsa_plaintext_utf8_hex": "46384134344244374136324245433235313244453545423239354136383939373a6162636465666768",
+  "pre_rsa_plaintext_length_bytes": 41,
+  "encrypt_type_sent_when_server_offers_1_and_2": "2",
+  "encrypt_type_sent_when_server_offers_only_1": "1",
+  "encrypt_type_1_password_field_value": "F8A44BD7A62BEC2512DE5EB295A68997",
+  "rsa": {
+    "padding": "PKCS#1 v1.5 type 2 (random non-zero pad), verified by Node raw RSA decrypt + manual EME-PKCS1-v1_5 (00 02 PS 00 M) parse of vendor JSEncrypt output",
+    "roundtrip_ok": true,
+    "ciphertext_bytes": 128,
+    "ciphertext_base64_length": 172
+  },
+  "login_body_shape": {
+    "method": "do",
+    "login": {
+      "username": "admin",
+      "password": "<encodeURIComponent(base64(RSA_PKCS1v15(pubkey, md5AuthPwd(pwd)+\":\"+nonce)))>",
+      "passwdType": "md5",
+      "encrypt_type": "2"
+    }
+  }
+}

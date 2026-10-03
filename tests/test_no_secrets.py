@@ -108,3 +108,25 @@ def test_binary_content_is_skipped(tmp_path: Path) -> None:
 def test_repository_contains_no_secrets() -> None:
     findings = scanner.scan_repo(REPO_ROOT)
     assert findings == [], "\n".join(str(f) for f in findings)
+
+
+def test_content_allowlist_is_minimal() -> None:
+    expected = frozenset({"tests/fixtures/vigi_nvr_auth_vectors.json"})
+    assert expected == scanner.CONTENT_ALLOWLIST
+
+
+def test_allowlisted_fixture_holds_only_dummy_inputs() -> None:
+    import json
+
+    data = json.loads(
+        (REPO_ROOT / "tests/fixtures/vigi_nvr_auth_vectors.json").read_text(encoding="utf-8")
+    )
+    assert data["inputs"] == {"password": "TestPass123", "nonce": "abcdefgh", "username": "admin"}
+    text = json.dumps(data)
+    for name, pattern in scanner.RULES:
+        if name != "hex32":
+            assert not pattern.search(text), name
+
+
+def test_backup_dir_is_forbidden_path() -> None:
+    assert scanner.forbidden_path_findings(["backups/nvr-config.bin"])

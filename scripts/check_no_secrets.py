@@ -55,8 +55,18 @@ RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
 FORBIDDEN_PATH_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("env_file", re.compile(r"(?:^|/)(?:[^/]*\.env|\.env)$")),
     ("capture_dir", re.compile(r"(?:^|/)captures/")),
+    ("backup_dir", re.compile(r"(?:^|/)backups/")),
 )
 ALLOWED_PATHS = frozenset({".env.example"})
+
+# Files exempt from CONTENT rules. Each entry needs a justification. Keep tiny.
+CONTENT_ALLOWLIST = frozenset(
+    {
+        # Public login test vectors for the dummy password "TestPass123"
+        # (32-hex MD5 values that the hex32 rule would otherwise flag).
+        "tests/fixtures/vigi_nvr_auth_vectors.json",
+    }
+)
 
 SKIP_DIRS = frozenset(
     {
@@ -70,6 +80,7 @@ SKIP_DIRS = frozenset(
         "dist",
         "build",
         "captures",
+        "backups",
         "htmlcov",
     }
 )
@@ -154,6 +165,8 @@ def scan_repo(root: Path) -> list[Finding]:
     findings = forbidden_path_findings(candidates)
     for rel in candidates:
         full = root / rel
+        if rel in CONTENT_ALLOWLIST:
+            continue
         if full.is_file():
             findings.extend(scan_file(full, rel))
     return findings
