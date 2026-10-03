@@ -22,14 +22,14 @@ Inputs available to agents (scratchpad `nvr/discovery/`, orchestrator copies the
 **Deliverables**
 - Everything in Master Plan §3 `core/` (self-contained, NVR-agnostic, with `core/README.md` stating it is the template the other two repos copy verbatim), fully implemented and tested (≥ 90% coverage on `core/`).
 - `vigi_nvr_mcp/crypto.py`: `md5_auth_pwd`, `build_login_plaintext(md5_hex, nonce)`, `load_public_key(url_encoded_b64_spki) -> RSAPublicKey`, `rsa_encrypt_pkcs1v15_urlsafe(pub, plaintext) -> str`. Pure.
-- `vigi_nvr_mcp/auth.py`: `NvrAuthenticator(settings, transport, breaker)`: `get_challenge() -> Challenge` (pydantic: code, encrypt_types, key, nonce, time, max_time), `login() -> Token` (exactly one HTTP login; on failure raises `AuthFailed(time,max_time)` and `breaker.record_failure`), `token` cache, `invalidate()`. Honour `login_disabled` and the breaker **before any login POST**. **Clarification (round-1 decision AL-F4/CC-F3): `login_disabled` and an open breaker freeze *login attempts* only — the credential-free challenge probe (`get_challenge`, used by `nvr_status`/`--check-auth`) stays allowed; it spends no login attempt and is the lockout-safe reachability check.** On `-40410` (nonce stale/reused) the password was never evaluated: do NOT resend inside the same call — raise `NonceInvalid` (retryable, not counted as a credential failure), so there is exactly one login POST per explicit `login()`.
+- `vigi_nvr_mcp/auth.py`: `NvrAuthenticator(settings, transport, breaker)`: `get_challenge() -> Challenge` (pydantic: code, encrypt_types, key, nonce, time, max_time), `login() -> Token` (exactly one HTTP login; on failure raises `AuthFailed(time,max_time)` and `breaker.record_failure`), `token` cache, `invalidate()`. Honour `login_disabled` and breaker **before** any network call.
 - `vigi_nvr_mcp/transport.py`: `NvrTransport(HttpTransport)`: `post_preauth(body)`, `post_api(token, body)`; maps non-zero `error_code` to `NvrApiError(code, meaning)` using the error table; raises `TokenExpired` on `-40401` from `/ds`.
 - `vigi_nvr_mcp/client.py`: `NvrClient`: `call(method, module, params) -> dict` with: serialised execution, lazy login, **single** re-login on `TokenExpired` (then re-raise), never on `AuthFailed`.
 - `vigi_nvr_mcp/errors.py`: `NVR_ERROR_CODES: dict[int, str]` imported from `_errcodes.json` (vendored as `vigi_nvr_mcp/catalog/errcodes.json`), `NvrApiError`.
 - `vigi_nvr_mcp/backend.py`: `VigiNvrBackend(DeviceBackend)`; `healthcheck()` = challenge only (no login) returning encrypt types + counters.
 - Tools: `nvr_check_auth` (challenge only; shows `time/max_time` if present), `nvr_login` (explicit; one attempt; returns `user_group` only — never the token), `nvr_get_device_info` (`device_info` / `basic_info`).
 - `tests/fixtures/vigi_nvr/auth_vectors.json` (copied) + tests asserting every field of it; RSA round-trip with a generated key; URL-encoding of `+ / =`; key `%2b` decoding; encrypt_type 1 path; challenge parsing with/without `time`.
-- Lockout tests: failed login → no retry, breaker written (a **persistent** file under `<PREFIX>_STATE_DIR`, so the budget survives a process restart; corrupt/unwritable state ⇒ breaker treated open, fail closed), `AuthFailed(time=9,max_time=10)` surfaced; `login_disabled` → **no login POST** (the credential-free challenge probe is still allowed — assert `login_attempts == 0`, not that the transport is untouched); breaker open → same; expired token mid-call → exactly one re-login then success; expired token twice → `TokenExpired` raised, no third login. `-40410` → `NonceInvalid`, exactly one login POST, not counted as a failure.
+- Lockout tests: failed login → no retry, breaker written, `AuthFailed(time=9,max_time=10)` surfaced; `login_disabled` → no HTTP call at all (assert transport mock not called); breaker open → same; expired token mid-call → exactly one re-login then success; expired token twice → `TokenExpired` raised, no third login.
 - `docs/protocol/vigi-nvr.md` — the protocol section above plus the error-code table.
 - `scripts/gate.py`, `scripts/check_no_secrets.py`, `pyproject.toml`, `.env.example`, `.gitignore`, `LICENSE`, `README.md` skeleton, `deploy/vigi-nvr-mcp.service.example`.
 
@@ -47,20 +47,6 @@ The inventory is the coverage. Every one of the 586 calls becomes reachable, val
 - Tests: catalog loads with `module_count == 61` and `len(all calls) == 586` and `mutating == 217` (read those numbers from the file's `_about`/computed, assert equality so a trimmed file fails); every mutating spec is refused without gates and sends nothing; a `get` spec sends the exact expected body; dry-run; fuzz 50 random specs → `build_body` output is valid JSON and contains `method`; adversarial params (depth bomb, 10k keys, 1 MB string, NUL bytes) rejected before any I/O.
 
 **Done when** `nvr_call` can reach every catalogued call in tests via a fake transport and the count assertions pass.
-
-**Wire shapes (CI-F1 fix, breaker r2).** A call is identified by `(module, method, key)`, but the firmware does not nest every call's params the same way — the `key` means different things per method/convention. `build_body` therefore derives one `CallSpec.shape ∈ {name_list, name, table, action, bare}` deterministically (from the inventory conventions in `endpoints.json._conventions` and the verified request captures in `discovery/_tools/raw-calls.json` + `channel-management.md`) and applies it. `params` passed to `nvr_call`/`build_body` is always the call's **inner** body (the fields `params_example` lists); the shape supplies the wrapper:
-
-| shape | wire body | when |
-|---|---|---|
-| `table` | `{<module>: {"table": <key>}}` | `get` whose key is a verified table (returns rows), e.g. `chm/get/added_dev` → `{"chm":{"table":"added_dev"}}` |
-| `name` | `{<module>: {"name": <key>}}` | `get` whose key is a verified scalar-name section, e.g. `function/get/module_spec` |
-| `name_list` | `{<module>: {"name": [<key>]}}` | every other real-keyed `get` (the list form the web client uses throughout) — the default |
-| `action` | `{<module>: {<key>: {...params}}}` | `do`/`set`/`add`/`delete` with a real sub-method key, e.g. `chm/do/chm_mod_dev_chn` → `{"chm":{"chm_mod_dev_chn":{"old_id":"9","new_id":"1"}}}` |
-| `bare` | `{<module>: {...params}}` | the few calls whose key is `(dynamic)`/absent — params pass straight through; flagged as such in `nvr_describe_call` |
-
-For an `action` call `build_body` also accepts an already-wrapped `{<key>: {...}}` body (it is not double-wrapped), and the unknown-top-level-key check validates the **inner** params against `params_example` — so the device-correct body is never rejected and a wrapper-less body is never emitted. `nvr_describe_call` returns a `wire_example`: the exact full body to put on the wire. The shape is verified against the `channel-management.md` envelopes and the `raw-calls.json` fixtures in `tests/test_catalog_wire_shapes.py`.
-
-**Catalog integrity (CI-F2/CI-F3 fixes).** The vendored `endpoints.json`/`errcodes.json` each carry a sidecar `<stem>.sha256` (SHA-256 of the canonical UTF-8 JSON text, written by `scripts/sanitize_catalog.py`); `Catalog.load()`/`code_to_symbol()` recompute and compare it, so a **count-preserving** tamper (a flipped `mutates` flag, a rewritten `params_example`, a swapped `method`) raises `ConfigError` at startup, not inside a tool. Param string validation rejects any Unicode Cc/Cf/Zl/Zp character via `has_forbidden_chars` (so U+2028/U+2029 line separators and the U+FEFF BOM no longer pass the C0/C1-only screen) and lone UTF-16 surrogates as `InvalidInput` before any `.encode()`.
 
 ## Phase N3 — typed read tools (one agent; may split N3a/N3b if > 14 files)
 
@@ -123,7 +109,7 @@ README sections for the NVR backend (tools table, write gating, lockout callout,
 
 ## Phase N7b — investigation primitives: motion windows, contact sheets, agent-retrievable exports (one agent; after N7)
 
-**Goal (owner's words):** "search for video footage of when a car came to the front door yesterday … sift through camera motion-detected frames … classify … download it and send it to my Gmail." The MCP is the data plane; the agent (openclaw, with vision + Gmail) does the looking, deciding and sending.
+**Goal (owner's words):** "search for video footage of when a car came to the front door yesterday … sift through camera motion-detected frames … classify … download it and send it to my Gmail." The MCP is the data plane; the agent (with vision and a mail tool) does the looking, deciding and sending.
 
 **Deliverables**
 - `nvr_list_recording_segments(channel, date, tz="local")` — the NVR's typed recording timeline for a day: `[{start, end, type ∈ {normal, motion, smart, manual, alarm, unknown}, raw_type}]`. Built on the `playback` search the web UI uses (static shape from `endpoints.json`; `nvr_search_recordings` from N3 is folded into this — one implementation, keep the old name as an alias). Live-verified in N5; until then the parser accepts both the inferred and the capture shapes and returns `PROTOCOL_ERROR` with the raw payload under `data.raw` on anything else (never a crash).

@@ -17,10 +17,15 @@ Wants=network-online.target
 Type=simple
 User=viginvrmcp
 Group=viginvrmcp
+# Secrets (VIGI_NVR_HOST, VIGI_NVR_PASSWORD, ...) live here, owned by the service
+# user and mode 0600. Keep them OUT of this unit file.
 EnvironmentFile=/etc/vigi-nvr-mcp.env
 Environment=VIGI_MCP_TRANSPORT=streamable-http
 Environment=VIGI_MCP_HOST=127.0.0.1
+# Keep all writable state under the systemd-managed StateDirectory (0700).
+Environment=VIGI_NVR_STATE_DIR=/var/lib/vigi-nvr-mcp/state
 Environment=VIGI_NVR_BACKUP_DIR=/var/lib/vigi-nvr-mcp/backups
+Environment=VIGI_NVR_EXPORT_DIR=/var/lib/vigi-nvr-mcp/exports
 WorkingDirectory=/var/lib/vigi-nvr-mcp
 StateDirectory=vigi-nvr-mcp
 StateDirectoryMode=0700

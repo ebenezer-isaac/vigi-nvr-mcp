@@ -11,14 +11,31 @@ license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
 authors = [{ name = "Ebenezer Isaac" }]
-keywords = ["mcp", "tp-link", "vigi", "nvr", "cctv"]
+keywords = [
+  "mcp",
+  "model-context-protocol",
+  "tp-link",
+  "vigi",
+  "nvr",
+  "cctv",
+  "camera",
+  "onvif",
+  "rtsp",
+  "surveillance",
+  "home-automation",
+]
 classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Intended Audience :: System Administrators",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "Operating System :: OS Independent",
   "Topic :: Multimedia :: Video :: Capture",
+  "Topic :: Home Automation",
+  "Topic :: System :: Monitoring",
 ]
 dependencies = [
   # FastMCP lives at mcp.server.fastmcp in the 1.x line; 2.x renamed it.
@@ -31,6 +48,12 @@ dependencies = [
   # containers); used by nvr_list_recording_segments / nvr_list_motion_windows tz.
   "tzdata>=2024.1",
 ]
+
+[project.urls]
+Homepage = "https://github.com/ebenezer-isaac/vigi-nvr-mcp"
+Repository = "https://github.com/ebenezer-isaac/vigi-nvr-mcp"
+Issues = "https://github.com/ebenezer-isaac/vigi-nvr-mcp/issues"
+Changelog = "https://github.com/ebenezer-isaac/vigi-nvr-mcp/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 dev = [
@@ -47,7 +70,20 @@ vigi-nvr-mcp = "vigi_nvr_mcp.cli:main"
 packages = ["vigi_nvr_mcp"]
 
 [tool.hatch.build.targets.sdist]
-include = ["vigi_nvr_mcp", "tests", "scripts", "README.md", "LICENSE", ".env.example"]
+include = [
+  "vigi_nvr_mcp",
+  "tests",
+  "scripts",
+  "docs",
+  "deploy",
+  "README.md",
+  "CHANGELOG.md",
+  "SECURITY.md",
+  "CONTRIBUTING.md",
+  "CODE_OF_CONDUCT.md",
+  "LICENSE",
+  ".env.example",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

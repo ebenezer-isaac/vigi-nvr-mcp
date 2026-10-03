@@ -1,0 +1,19 @@
+{
+  "description": "Local, browser-free MCP server for a TP-Link VIGI NVR: read-first, write-gated, lockout-aware; manage channels and export footage over RTSP.",
+  "homepage": "https://github.com/ebenezer-isaac/vigi-nvr-mcp",
+  "topics": [
+    "mcp",
+    "model-context-protocol",
+    "tp-link",
+    "vigi",
+    "nvr",
+    "cctv",
+    "camera",
+    "onvif",
+    "rtsp",
+    "surveillance",
+    "home-automation",
+    "ffmpeg",
+    "python"
+  ]
+}
