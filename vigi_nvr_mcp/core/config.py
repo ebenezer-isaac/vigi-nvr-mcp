@@ -12,6 +12,7 @@ import ipaddress
 import os
 import re
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator
@@ -30,6 +31,12 @@ DEVICE_ENV_SUFFIXES: dict[str, str] = {
     "MAX_LOGIN_FAILURES": "max_login_failures",
     "DRY_RUN": "dry_run",
     "BACKUP_DIR": "backup_dir",
+    "RTSP_PORT": "rtsp_port",
+    "RTSP_USERNAME": "rtsp_username",
+    "RTSP_PASSWORD": "rtsp_password",
+    "EXPORT_DIR": "export_dir",
+    "EXPORT_MAX_MINUTES": "export_max_minutes",
+    "FFMPEG": "ffmpeg_path",
 }
 GLOBAL_ENV_SUFFIXES: dict[str, str] = {
     "TRANSPORT": "mcp_transport",
@@ -81,6 +88,15 @@ class DeviceSettings(BaseModel):
     max_login_failures: int = Field(default=1, ge=1, le=5)
     dry_run: bool = False
     backup_dir: str = Field(default="backups", min_length=1, max_length=1024)
+    # --- media / RTSP export (used only by device packages that expose RTSP; other
+    # packages simply never set these variables). Defaults stay generic so this
+    # template file remains device-agnostic. ---
+    rtsp_port: Port = 554
+    rtsp_username: str | None = None
+    rtsp_password: SecretStr | None = Field(default=None, max_length=128)
+    export_dir: str = Field(default="exports", min_length=1, max_length=1024)
+    export_max_minutes: int = Field(default=60, ge=1, le=1440)
+    ffmpeg_path: str | None = Field(default=None, max_length=1024)
 
     @field_validator("host", mode="before")
     @classmethod
@@ -101,10 +117,31 @@ class DeviceSettings(BaseModel):
             raise ValueError("must not contain control characters")
         return value
 
-    @field_validator("backup_dir")
+    @field_validator("backup_dir", "export_dir")
     @classmethod
-    def _validate_backup_dir(cls, value: str) -> str:
+    def _validate_dir(cls, value: str) -> str:
         if _CONTROL_CHARS.search(value):
+            raise ValueError("must not contain control characters")
+        return value
+
+    @field_validator("ffmpeg_path")
+    @classmethod
+    def _validate_ffmpeg_path(cls, value: str | None) -> str | None:
+        if value is not None and _CONTROL_CHARS.search(value):
+            raise ValueError("must not contain control characters")
+        return value
+
+    @field_validator("rtsp_username")
+    @classmethod
+    def _validate_rtsp_username(cls, value: str | None) -> str | None:
+        if value is not None and not _USERNAME.fullmatch(value):
+            raise ValueError("must be 1-64 printable ASCII characters without spaces")
+        return value
+
+    @field_validator("rtsp_password")
+    @classmethod
+    def _validate_rtsp_password(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is not None and _CONTROL_CHARS.search(value.get_secret_value()):
             raise ValueError("must not contain control characters")
         return value
 
@@ -112,6 +149,27 @@ class DeviceSettings(BaseModel):
     def base_url(self) -> str:
         host = f"[{self.host}]" if ":" in self.host else self.host
         return f"https://{host}:{self.port}"
+
+    @property
+    def host_for_url(self) -> str:
+        """The host wrapped in brackets if it is an IPv6 literal (for URLs)."""
+        return f"[{self.host}]" if ":" in self.host else self.host
+
+    @property
+    def effective_rtsp_username(self) -> str:
+        """RTSP username, defaulting to the device login username."""
+        return self.rtsp_username or self.username
+
+    @property
+    def effective_rtsp_password(self) -> str:
+        """RTSP password (plaintext), defaulting to the device login password."""
+        secret = self.rtsp_password or self.password
+        return secret.get_secret_value()
+
+    @property
+    def export_path(self) -> Path:
+        """The export directory with ``~`` expanded. Not created here."""
+        return Path(self.export_dir).expanduser()
 
     def env_name(self, suffix: str) -> str:
         return f"{self.env_prefix}{suffix}"

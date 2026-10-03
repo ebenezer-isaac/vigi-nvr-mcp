@@ -23,6 +23,7 @@ from ..tools import (
     detection,
     device,
     events,
+    export,
     media,
     raw,
     storage,
@@ -31,7 +32,19 @@ from ..tools import (
 from ..transport import NvrTransport
 
 ENV_PREFIX = "VIGI_NVR_"
-TOOL_MODULES = (device, raw, catalog, channels, storage, backup, media, detection, events, system)
+TOOL_MODULES = (
+    device,
+    raw,
+    catalog,
+    channels,
+    storage,
+    backup,
+    media,
+    detection,
+    events,
+    system,
+    export,
+)
 
 
 class NvrBackend:

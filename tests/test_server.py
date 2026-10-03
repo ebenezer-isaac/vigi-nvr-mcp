@@ -53,6 +53,14 @@ EXPECTED_TOOLS = {
     "nvr_get_firewall",
     "nvr_get_cloud_status",
     "nvr_get_time",
+    # Phase N7 media / RTSP export tools
+    "nvr_get_rtsp_status",
+    "nvr_enable_rtsp",
+    "nvr_get_stream_url",
+    "nvr_export_clip",
+    "nvr_snapshot",
+    "nvr_list_exports",
+    "nvr_delete_export",
 }
 
 

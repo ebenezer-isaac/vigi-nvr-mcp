@@ -81,6 +81,12 @@ directory is loaded if present). Start from `.env.example`. Never commit `.env`.
 | `VIGI_NVR_LOGIN_DISABLED` | `false` | Freeze authentication |
 | `VIGI_NVR_MAX_LOGIN_FAILURES` | `1` | Per-process failure budget, 1-5 |
 | `VIGI_NVR_BACKUP_DIR` | `backups` | Where `nvr_backup_config` writes (mode 0600) |
+| `VIGI_NVR_RTSP_PORT` | `554` | RTSP/ONVIF port probed by `nvr_get_rtsp_status` |
+| `VIGI_NVR_RTSP_USERNAME` | (NVR username) | RTSP account; defaults to `VIGI_NVR_USERNAME` |
+| `VIGI_NVR_RTSP_PASSWORD` | (NVR password) | RTSP password; defaults to `VIGI_NVR_PASSWORD` |
+| `VIGI_NVR_EXPORT_DIR` | `~/.local/share/vigi-nvr-mcp/exports` | Clip/snapshot output (dir 0700) |
+| `VIGI_NVR_EXPORT_MAX_MINUTES` | `60` | Longest export window, 1-1440 |
+| `VIGI_NVR_FFMPEG` | (PATH) | Path to `ffmpeg` if not on `PATH` |
 | `VIGI_MCP_TRANSPORT` | `stdio` | `stdio` or `streamable-http` |
 | `VIGI_MCP_HOST` | `127.0.0.1` | IP literal to bind for HTTP |
 | `VIGI_MCP_PORT` | `8765` | |
@@ -135,6 +141,12 @@ Fields named `ciphertext`, `key`, `stok`, `passwd`, `pwd`, `token`, `secret` or
 | `nvr_backup_config` | read | Downloads the config backup (`system` `download_conf`). Not write-gated, so run it before any cleanup |
 | `nvr_remove_channel` | **write** | Unbinds a channel (`chm_del_dev`) |
 | `nvr_move_channel` | **write** | Moves a binding to an **empty** slot (`chm_mod_dev_chn`), keeping its settings |
+| `nvr_get_rtsp_status` | read | ONVIF/RTSP enablement plus a TCP probe of the RTSP port |
+| `nvr_enable_rtsp` | **write** | One-time ONVIF/RTSP enable (`onvif_server` set) |
+| `nvr_get_stream_url` | read | Redacted live RTSP URL + which env vars hold the credentials |
+| `nvr_export_clip` | **write** (local) | Exports a replay window to mp4 (`ffmpeg -c copy`) |
+| `nvr_snapshot` | read | One JPEG frame from a live stream into the export dir |
+| `nvr_list_exports`, `nvr_delete_export` | read / **write** | Manage the export directory (path-confined) |
 | `nvr_call` | read/**write** | Raw `{"method", module: params}`; `login` and `user_management` always refused |
 
 ### Write gating
@@ -149,6 +161,61 @@ writes add three more checks:
 
 `VIGI_NVR_DRY_RUN=true` returns the exact request instead of sending it.
 Results include redacted before/after rows.
+
+## Exporting footage over RTSP
+
+TP-Link VIGI NVRs expose live and recorded video over RTSP, so footage can be
+exported losslessly with `ffmpeg` and no proprietary player. These tools need
+`ffmpeg` and `ffprobe` on `PATH` (or `VIGI_NVR_FFMPEG` pointing at `ffmpeg`); if
+neither is found, the media tools return a `MEDIA_UNAVAILABLE` envelope instead
+of failing.
+
+**One-time: turn RTSP on.** Many NVRs ship with ONVIF/RTSP off (port 554
+closed). Check and enable it:
+
+```text
+nvr_get_rtsp_status                       # enabled? is 554 open?
+nvr_enable_rtsp(confirm_write=true)       # needs VIGI_NVR_ALLOW_WRITES=true
+```
+
+`nvr_enable_rtsp` is write-gated like any mutation and supports
+`VIGI_NVR_DRY_RUN=true` (it returns the exact `onvif_server` request without
+sending it). It re-reads the setting afterwards and reports
+`enabled_before`/`enabled_after`.
+
+**Export a clip.** `nvr_export_clip` takes ISO-8601 `start`/`end` (a UTC offset
+is required) and writes an mp4 into `VIGI_NVR_EXPORT_DIR`:
+
+```text
+nvr_export_clip(channel=5,
+                start="2026-10-03T14:00:00Z",
+                end="2026-10-03T14:02:00Z",
+                stream=1, confirm_write=true)
+```
+
+Writing to local disk counts as a write, so it needs both
+`VIGI_NVR_ALLOW_WRITES=true` and `confirm_write=true`. The window must be no
+longer than `VIGI_NVR_EXPORT_MAX_MINUTES`. The result includes the file path,
+size, duration, SHA-256 and a redacted `ffmpeg` stderr tail; the clip is
+`ffprobe`-verified to contain a video stream. `nvr_snapshot` grabs a single JPEG
+and is read-only. `nvr_list_exports` and `nvr_delete_export` manage the
+directory (names are path-confined). Use `nvr_search_recordings` to find a
+window that actually has footage; an empty window surfaces as
+`NO_FOOTAGE_IN_WINDOW`.
+
+> [!WARNING]
+> **RTSP credentials are visible on the NVR host.** `ffmpeg` receives the RTSP
+> URL with the username and password in its userinfo, so the credentials appear
+> in that process's command line (`ps`) on the machine running this server. The
+> intended deploy target is a single-admin box. Prefer a dedicated viewer
+> account via `VIGI_NVR_RTSP_USERNAME`/`VIGI_NVR_RTSP_PASSWORD` rather than the
+> `admin` login. Every URL this server returns or logs is redacted; only
+> `ffmpeg` ever sees the plaintext.
+
+Exports can be large and are never deleted automatically. Keep
+`VIGI_NVR_EXPORT_DIR` on a disk with room, and prune old clips with
+`nvr_delete_export` (or a retention job). The directory is created with mode
+0700; exported footage is not encrypted.
 
 ## Security notes
 
