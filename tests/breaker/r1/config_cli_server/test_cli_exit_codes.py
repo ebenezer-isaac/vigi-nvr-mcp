@@ -68,8 +68,12 @@ async def test_auth_failure_and_lockout_have_distinct_exit_codes() -> None:
 
 
 async def test_success_and_failure_exit_codes() -> None:
+    # RECONCILED to orchestrator decision CC-F2 (fixer brief): exit codes are
+    # 0 success / 1 auth failed / 2 config error / 3 lockout-breaker-login-disabled
+    # / 4 transport. A login-disabled refusal (LOGIN_REFUSED) is therefore exit 3,
+    # distinct from an auth failure (exit 1) -- which is the whole point of F2.
     ok_fake = FakeNvr()
     ok_exit = await _exit_code(ok_fake)
     assert ok_exit == 0
     fail_exit = await _exit_code(FakeNvr(), LOGIN_DISABLED="true")
-    assert fail_exit == 1
+    assert fail_exit == 3

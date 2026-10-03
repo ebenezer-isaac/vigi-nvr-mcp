@@ -44,15 +44,18 @@ async def _envelope(mcp, name: str, args: dict[str, Any] | None = None) -> dict[
     return json.loads(content[0].text)
 
 
-async def test_status_performs_zero_device_io() -> None:
+async def test_status_probes_but_never_logs_in() -> None:
+    # RECONCILED to orchestrator decision CC-F3 / AL-F4 (fixer brief, amended
+    # 01-NVR-SPEC §N1): nvr_status is a reachability healthcheck, so a
+    # credential-free challenge probe is expected and allowed; what it must never
+    # do is spend a login attempt. The original claim conflated "no login" with
+    # "no I/O"; this asserts the clarified rule (probe allowed, login never).
     fake = FakeNvr()
     backend = NvrBackend.from_env(nvr_env(), http_transport=fake.transport())
     mcp, _ = _build(backend)
     await _envelope(mcp, "nvr_status")
     await backend.aclose()
-    # The claim says nvr_status does zero device I/O; it actually POSTs the
-    # pre-auth challenge to "/".
-    assert fake.requests == [], f"nvr_status performed device I/O: {fake.requests}"
+    assert fake.login_attempts == 0, f"nvr_status spent a login attempt: {fake.requests}"
 
 
 async def test_status_returns_envelope_on_non_device_error() -> None:

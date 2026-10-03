@@ -224,6 +224,25 @@ def test_cli_check_auth_missing_host_exit_code(monkeypatch, capsys) -> None:
     assert "VIGI_NVR_HOST" in capsys.readouterr().err
 
 
+def test_cli_breaker_show_and_clear(monkeypatch, capsys) -> None:
+    for key in [k for k in __import__("os").environ if k.startswith("VIGI_")]:
+        monkeypatch.delenv(key)
+    monkeypatch.setenv("VIGI_NVR_HOST", "192.0.2.10")
+    monkeypatch.setenv("VIGI_NVR_PASSWORD", "x")
+    assert cli.main(["breaker", "--show"]) == 0
+    out = capsys.readouterr().out
+    assert '"state": "closed"' in out
+    assert cli.main(["breaker", "--clear"]) == 0
+    assert "cleared" in capsys.readouterr().out
+
+
+def test_cli_breaker_missing_host_exit_code(monkeypatch, capsys) -> None:
+    for key in [k for k in __import__("os").environ if k.startswith("VIGI_")]:
+        monkeypatch.delenv(key)
+    assert cli.main(["breaker", "--show", "--env-file", "/nonexistent/.env"]) == 2
+    assert "VIGI_NVR_HOST" in capsys.readouterr().err
+
+
 def test_cli_serve_config_error_exit_code(monkeypatch, capsys) -> None:
     for key in [k for k in __import__("os").environ if k.startswith("VIGI_")]:
         monkeypatch.delenv(key)

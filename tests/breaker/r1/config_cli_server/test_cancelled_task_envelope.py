@@ -17,15 +17,18 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from vigi_nvr_mcp.core.tooling import run_tool
 
 
-async def test_run_tool_returns_envelope_on_cancelled_task() -> None:
+async def test_run_tool_propagates_cancelled_task() -> None:
+    # WON'T-FIX per orchestrator decision CC-F5 (fixer brief): re-raising
+    # CancelledError is the correct cooperative-cancellation behaviour; swallowing
+    # it into an envelope would itself be a bug. The claim was over-broad. This
+    # test is inverted to assert that run_tool lets CancelledError propagate.
     async def cancelled() -> None:
         raise asyncio.CancelledError()
 
-    envelope = await run_tool("nvr_demo", cancelled)
-    # The claim says a cancelled task still yields an envelope. It does not;
-    # the await above re-raises CancelledError before this assertion is reached.
-    assert envelope["success"] is False
-    assert envelope["error"]["code"] == "INTERNAL_ERROR"
+    with pytest.raises(asyncio.CancelledError):
+        await run_tool("nvr_demo", cancelled)
