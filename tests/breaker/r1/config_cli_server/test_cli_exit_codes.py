@@ -49,7 +49,8 @@ async def test_auth_failure_and_lockout_have_distinct_exit_codes() -> None:
     assert auth_result["error"]["code"] == "AUTH_FAILED"
     auth_exit = emit_envelope(auth_result, stream=__import__("io").StringIO())
 
-    # Lockout: login frozen locally -> LOGIN_REFUSED, no network login spent.
+    # Lockout: login frozen locally -> LOGIN_DISABLED (X1: the breaker owns the
+    # login-disabled policy), no network login spent. Still exit 3.
     lock_fake = FakeNvr()
     lock_exit = await _exit_code(lock_fake, LOGIN_DISABLED="true")
     # Re-derive the lockout result to assert its error code too.
@@ -58,7 +59,7 @@ async def test_auth_failure_and_lockout_have_distinct_exit_codes() -> None:
         lock_result = await lock_backend.check_auth(login=True)
     finally:
         await lock_backend.aclose()
-    assert lock_result["error"]["code"] == "LOGIN_REFUSED"
+    assert lock_result["error"]["code"] == "LOGIN_DISABLED"
 
     # The claim says these are distinguished by exit code; they are not (both 1).
     assert auth_exit != lock_exit, (

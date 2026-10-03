@@ -35,13 +35,13 @@ def test_unknown_global_key_fails_loudly_and_names_it() -> None:
 
 
 def test_unknown_global_key_is_not_silently_dropped() -> None:
-    # RT-F3 fix (fixer r2): load_global_settings now rejects unknown VIGI_MCP_* keys
-    # via the shared reject_unknown_env, so the typo is no longer silently dropped
-    # (the operator's intent is never lost without a word). This companion asserted
-    # the pre-fix drop; it now asserts the key is refused rather than ignored.
+    # X1: the typo is NOT silently dropped - the global loader rejects it just like
+    # the device loader (F3 fixed). A valid config still loads unchanged.
     env = {
         f"{MCP_PREFIX}HOST": "127.0.0.1",
         f"{MCP_PREFIX}TRANPORT": "streamable-http",
     }
     with pytest.raises(ConfigError):
         load_global_settings(MCP_PREFIX, env)
+    ok = load_global_settings(MCP_PREFIX, {f"{MCP_PREFIX}TRANSPORT": "streamable-http"})
+    assert ok.mcp_transport == "streamable-http"

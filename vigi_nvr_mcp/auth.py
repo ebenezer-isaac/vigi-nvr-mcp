@@ -13,15 +13,16 @@ VIGI NVRs lock the account after repeated failed logins. Rules enforced here:
    first failure or when the device reports few attempts remaining.
 6. ``VIGI_NVR_LOGIN_DISABLED=true`` refuses every login before any network I/O.
 
-Plus a persistent failure budget (``VIGI_NVR_MAX_LOGIN_FAILURES``, default 1)
-held by the file-backed :class:`~vigi_nvr_mcp.core.breaker.LoginBreaker`, so the
-budget survives restarts and crash-loops.
-
-On -40410 (nonce stale/already used) the password was never evaluated: the login
-is NOT resent inside the same call. Exactly one login POST per explicit
-``login()``; a :class:`~vigi_nvr_mcp.core.errors.NonceInvalid` is raised
-(retryable, not counted as a credential failure) and the caller may retry with a
-fresh challenge.
+The failure budget is held by the file-backed, cross-process
+:class:`~vigi_nvr_mcp.core.breaker.LoginBreaker`. One login attempt is **reserved**
+(an atomic, locked increment that survives restarts and crashes) *around the single
+login POST*; the credential-free challenge and the pre-login device-counter guard
+stay outside the reservation and spend no budget. On the happy path the reservation
+is released ``SUCCESS``; on a rejected/failed POST it is released ``FAILURE``; a
+pre-POST refusal (malformed challenge, device-reported lockout) releases ``ABORT``
+so it never counts against the budget. On -40410 (nonce stale/reused) the login is
+NOT resent; conservatively the reserved attempt is counted (``FAILURE``) and a
+:class:`~vigi_nvr_mcp.core.errors.NonceInvalid` is raised.
 """
 
 from __future__ import annotations
@@ -36,8 +37,16 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from . import crypto
 from .core import breaker
+from .core.breaker import LoginBreaker, canonical_device_key
 from .core.config import DeviceSettings
-from .core.errors import ApiError, AuthFailed, NonceInvalid, TransportError
+from .core.errors import (
+    ApiError,
+    AuthFailed,
+    LockoutGuard,
+    NonceInvalid,
+    TransportError,
+)
+from .core.state import Outcome, Reservation
 from .errors import (
     FACTORY_RESET,
     LOCKED_CODES,
@@ -53,6 +62,9 @@ log = logging.getLogger(__name__)
 APP_NAME = "vigi-nvr-mcp"
 PASSWD_TYPE = "md5"  # noqa: S105 - protocol field value, always "md5"
 CHALLENGE_BODY: dict[str, Any] = {"user_management": {"get_encrypt_info": None}, "method": "do"}
+
+# Implicit (automatic) logins stop when the device reports this few attempts left.
+IMPLICIT_LOGIN_MIN_REMAINING = 3
 
 
 class Challenge(BaseModel):
@@ -83,6 +95,40 @@ def _int_or_none(value: Any) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
+def check_remaining_attempts(
+    remaining: int | None,
+    *,
+    explicit: bool,
+    max_attempts: int | None = None,
+    lock_seconds_left: int | None = None,
+) -> None:
+    """Guard on the device-reported remaining-attempts counter (None = unknown).
+
+    This is the pre-login device-side counter check; it spends no budget (the caller
+    releases ``ABORT`` when it raises). Carries the device counters so the operator
+    sees how long to wait.
+    """
+    if remaining is None:
+        return
+    if remaining <= 0:
+        raise LockoutGuard(
+            "Login refused: the device reports 0 login attempts remaining; the account is "
+            "locked or about to be. Wait for the lock to expire.",
+            attempts_left=remaining,
+            max_attempts=max_attempts,
+            lock_seconds_left=lock_seconds_left,
+        )
+    if not explicit and remaining < IMPLICIT_LOGIN_MIN_REMAINING:
+        raise LockoutGuard(
+            f"Login refused: the device reports only {remaining} attempt(s) remaining. "
+            "Automatic login is suspended; use the explicit login tool if you are sure "
+            "the credentials are correct.",
+            attempts_left=remaining,
+            max_attempts=max_attempts,
+            lock_seconds_left=lock_seconds_left,
+        )
+
+
 class Authenticator:
     def __init__(self, settings: DeviceSettings, transport: NvrTransport) -> None:
         self._settings = settings
@@ -92,18 +138,24 @@ class Authenticator:
         state_dir = (
             Path(settings.state_dir) if settings.state_dir else breaker.default_state_dir(APP_NAME)
         )
-        self._breaker = breaker.LoginBreaker(state_dir, settings.host, settings)
+        self._breaker = LoginBreaker(
+            state_dir,
+            canonical_device_key(settings.host),
+            max_failures=settings.max_login_failures,
+            login_disabled=settings.login_disabled,
+            disabled_hint=f"{settings.env_name('LOGIN_DISABLED')}=true",
+        )
 
     # ---- public API ---------------------------------------------------------
 
     def status(self) -> dict[str, Any]:
-        info = self._breaker.show()
+        info = self._breaker.status()
         return {
             "authenticated": self._state.token is not None,
-            "failed_logins": info.get("failed", 0),
-            "max_login_failures": self._settings.max_login_failures,
-            "successful_logins": info.get("successful", 0),
-            "login_disabled": self._settings.login_disabled,
+            "failed_logins": info.get("failures", 0),
+            "max_login_failures": info.get("max_failures", self._settings.max_login_failures),
+            "successful_logins": info.get("successes", 0),
+            "login_disabled": info.get("login_disabled", self._settings.login_disabled),
             "last_failure": info.get("last_failure"),
         }
 
@@ -136,38 +188,77 @@ class Authenticator:
     # ---- internals ----------------------------------------------------------
 
     async def _login_locked(self, *, explicit: bool) -> str:
-        self._breaker.check(explicit=explicit)
+        if not explicit:
+            snap = self._breaker.status()
+            if (
+                snap.get("state") in ("open", "cooldown")
+                or snap.get("failures")
+                or snap.get("reserved")
+            ):
+                raise LockoutGuard(
+                    "Automatic login is suspended after a prior failure or while the breaker "
+                    "is open; use the explicit login tool once the cause is fixed."
+                )
+        res = self._breaker.reserve_attempt()  # LoginDisabled/BreakerOpen/Cooldown before any I/O
         try:
-            reply = await self._attempt(explicit=explicit)
+            return await self._attempt_with(res, explicit=explicit)
+        except BaseException:
+            if not res.resolved:
+                res.release(Outcome.FAILURE)  # anything unexpected: fail closed
+            raise
+
+    async def _attempt_with(self, res: Reservation, *, explicit: bool) -> str:
+        # Pre-POST section: the challenge, counter guard and crypto encoding spend no
+        # budget, so a failure here releases ABORT (the login never reached the device).
+        try:
+            challenge = await self.get_challenge()
+            check_remaining_attempts(
+                challenge.time,
+                explicit=explicit,
+                max_attempts=challenge.max_time,
+                lock_seconds_left=challenge.sec_left,
+            )
+            body, encrypt_type = self._build_login(challenge)
+        except (ApiError, TransportError, LockoutGuard):
+            res.release(Outcome.ABORT)
+            raise
+
+        log.info("login attempt (explicit=%s, encrypt_type=%s)", explicit, encrypt_type)
+        try:
+            reply = await self._transport.post_preauth(body, accept_codes=(0, SUPER_PASSWORD_OK))
+        except TransportError as exc:
+            res.release(Outcome.FAILURE, failure=self._failure_dict(None, None))
+            self._state = AuthState(token=None)
+            raise self._auth_failed(
+                None, None, note=f"{exc}; outcome unknown, counted as a failure."
+            ) from None
         except ApiError as exc:
             if exc.code == NONCE_INVALID:
-                # The password was never evaluated, so this is NOT a credential
-                # failure and must not be counted. Exactly one login POST per
-                # explicit call: no automatic resend. The caller may retry.
-                log.info("login nonce rejected (-40410); not resending (retryable)")
+                # The password was never evaluated; still, conservatively, this is a
+                # spent attempt (no automatic resend). One login POST per explicit call.
+                res.release(Outcome.FAILURE, failure=self._failure_dict(NONCE_INVALID, exc.data))
+                self._state = AuthState(token=None)
+                log.info("login nonce rejected (-40410); not resending (counted, retryable)")
                 raise NonceInvalid(
                     "NVR rejected the login nonce (-40410) as stale or already used. "
                     "No automatic resend; fetch a fresh challenge and retry the login."
                 ) from None
-            raise self._record_failure(exc.code, exc.data) from None
+            res.release(Outcome.FAILURE, failure=self._failure_dict(exc.code, exc.data))
+            self._state = AuthState(token=None)
+            raise self._auth_failed(exc.code, exc.data) from None
+
         try:
             success = LoginSuccess.model_validate(reply)
         except ValidationError:
+            res.release(Outcome.FAILURE, failure=self._failure_dict(None, None))
+            self._state = AuthState(token=None)
             raise TransportError("NVR login reply did not contain a valid session token") from None
         self._state = AuthState(token=success.stok)
-        self._breaker.record_success()
+        res.release(Outcome.SUCCESS)
         log.info("login succeeded")
         return success.stok
 
-    async def _attempt(self, *, explicit: bool) -> dict[str, Any]:
-        """Fresh challenge + exactly one login POST. ApiError propagates to caller."""
-        challenge = await self.get_challenge()
-        breaker.check_remaining_attempts(
-            challenge.time,
-            explicit=explicit,
-            max_attempts=challenge.max_time,
-            lock_seconds_left=challenge.sec_left,
-        )
+    def _build_login(self, challenge: Challenge) -> tuple[dict[str, Any], str]:
         try:
             password_field, encrypt_type = crypto.encode_login_password(
                 self._settings.password.get_secret_value(),
@@ -186,29 +277,23 @@ class Authenticator:
                 "encrypt_type": encrypt_type,
             },
         }
-        log.info("login attempt (explicit=%s, encrypt_type=%s)", explicit, encrypt_type)
-        try:
-            return await self._transport.post_preauth(body, accept_codes=(0, SUPER_PASSWORD_OK))
-        except TransportError as exc:
-            raise self._record_failure(
-                None, None, note=f"{exc}; outcome unknown, counted as a failure."
-            ) from None
+        return body, encrypt_type
 
-    def _record_failure(
-        self, code: int | None, data: Any, *, note: str | None = None
-    ) -> AuthFailed:
+    @staticmethod
+    def _failure_dict(code: int | None, data: Any) -> dict[str, Any]:
+        info = data if isinstance(data, dict) else {}
+        return {
+            "device_error_code": code,
+            "attempts_left": _int_or_none(info.get("time")),
+            "max_attempts": _int_or_none(info.get("max_time")),
+            "lock_seconds_left": _int_or_none(info.get("sec_left")),
+        }
+
+    def _auth_failed(self, code: int | None, data: Any, *, note: str | None = None) -> AuthFailed:
         info = data if isinstance(data, dict) else {}
         remaining = _int_or_none(info.get("time"))
         max_attempts = _int_or_none(info.get("max_time"))
         sec_left = _int_or_none(info.get("sec_left"))
-        failure = {
-            "device_error_code": code,
-            "attempts_left": remaining,
-            "max_attempts": max_attempts,
-            "lock_seconds_left": sec_left,
-        }
-        self._state = AuthState(token=None)
-        self._breaker.record_failure(failure)
         symbol = error_symbol(code) if code is not None else "UNKNOWN"
         parts = [note or f"Login rejected by NVR (error_code {code} {symbol})."]
         if code == FACTORY_RESET:

@@ -21,7 +21,7 @@ from tests.helpers import NVR_PREFIX, FakeNvr, nvr_env
 from vigi_nvr_mcp.auth import Authenticator
 from vigi_nvr_mcp.backend import NvrBackend
 from vigi_nvr_mcp.core.config import DeviceSettings, load_device_settings
-from vigi_nvr_mcp.core.errors import AuthFailed, LockoutGuard
+from vigi_nvr_mcp.core.errors import AuthFailed, BreakerOpen
 from vigi_nvr_mcp.transport import NvrTransport
 
 
@@ -39,7 +39,7 @@ async def _fail_one_login(settings: DeviceSettings) -> FakeNvr:
         await auth.login()
     assert fake.login_attempts == 1
     # In-process the breaker is now open: a second login is refused with no I/O.
-    with pytest.raises(LockoutGuard):
+    with pytest.raises(BreakerOpen):
         await auth.login()
     await transport.aclose()
     return fake
@@ -56,7 +56,7 @@ async def test_breaker_stays_open_after_process_restart() -> None:
     try:
         # The claim/spec: the persisted breaker is still open, so this must be
         # refused locally with ZERO network login attempts.
-        with pytest.raises(LockoutGuard):
+        with pytest.raises(BreakerOpen):
             await auth2.login()
         assert fake2.login_attempts == 0, (
             "breaker did not persist: a new process issued a fresh login attempt"
