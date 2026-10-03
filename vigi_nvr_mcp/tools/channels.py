@@ -23,6 +23,7 @@ from ..core.envelope import fail
 from ..core.errors import NotFound, PreconditionFailed
 from ..core.redact import redact
 from ..core.write_gate import check_write_gate
+from ..planning import build_cleanup_plan
 from . import ToolContext, run_tool
 
 CHANNEL_ID_RE = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
@@ -143,6 +144,16 @@ async def find_duplicate_channels(ctx: ToolContext) -> dict[str, Any]:
     return await run_tool("nvr_find_duplicate_channels", action)
 
 
+async def plan_channel_cleanup(ctx: ToolContext) -> dict[str, Any]:
+    """Read-only: an ordered, resumable plan to remove ghosts and pack cameras ≤ 8."""
+
+    async def action() -> dict[str, Any]:
+        rows = await ctx.client.list_channels()
+        return build_cleanup_plan(rows).model_dump(mode="json")
+
+    return await run_tool("nvr_plan_channel_cleanup", action)
+
+
 async def remove_channel(
     ctx: ToolContext, channel_id: str | int, expected_uuid: str, confirm_write: bool = False
 ) -> dict[str, Any]:
@@ -245,6 +256,17 @@ def register(mcp: FastMCP, ctx: ToolContext) -> list[str]:
         with online="0" or conn_status!="0" are marked stale (removal candidates)."""
         return await find_duplicate_channels(ctx)
 
+    @mcp.tool(name="nvr_plan_channel_cleanup")
+    async def _plan() -> dict[str, Any]:
+        """Read-only. Produce an ordered, resumable cleanup plan: back up config, remove
+        every ghost (one call each), re-read, then move each real camera stranded above
+        slot 8 into the lowest confirmed-empty low slot. Each step lists the exact tool,
+        arguments and the precondition to verify from the previous step; also returns a
+        summary (counts, final layout) and an unsafe_if list of conditions that block
+        moves (two real cameras share a uuid, more than 8 real cameras, an online ghost).
+        Nothing is written; hand each step to the matching write tool yourself."""
+        return await plan_channel_cleanup(ctx)
+
     @mcp.tool(name="nvr_remove_channel")
     async def _remove(
         channel_id: str, expected_uuid: str, confirm_write: bool = False
@@ -268,6 +290,7 @@ def register(mcp: FastMCP, ctx: ToolContext) -> list[str]:
         "nvr_list_channels",
         "nvr_get_channel",
         "nvr_find_duplicate_channels",
+        "nvr_plan_channel_cleanup",
         "nvr_remove_channel",
         "nvr_move_channel",
     ]
