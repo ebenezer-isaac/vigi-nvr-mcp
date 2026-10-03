@@ -31,10 +31,42 @@ FAKE_STOK_2 = "cd" * 16
 NVR_PREFIX = "VIGI_NVR_"
 
 
+# Synthetic 1024-bit RSA private key (PKCS#8 DER, base64), NOT a real credential.
+# Committed as a fixed test vector so the keypair is identical on every run. It was
+# chosen offline so that its public SubjectPublicKeyInfo base64 contains BOTH '+' and
+# '/' (see make_rsa_keypair/firmware_style_key below); that guarantee is what makes the
+# lowercase %2b/%2f wire-escape assertions deterministic instead of flaking ~1-in-N runs
+# on a randomly generated key whose base64 happened to contain neither character. The
+# keypair is also used by the FakeNvr fake to complete the RSA (encrypt_type 2) login,
+# so firmware_style_key() and the fake's decryption key must stay the same keypair.
+# secret-scan: allow (synthetic 1024-bit RSA test key, no real credential)
+_SYNTHETIC_RSA_PRIVATE_DER_B64 = (
+    "MIICdgIBADANBgkqhkiG9w0BAQEFAASCAmAwggJcAgEAAoGBAL9VbDy0oyHmOQtSZ6L/OQ+eSasUc7KWV0LUCvY6"
+    "bQIF4KmuOzDXDOS7T6+KiWm8QPs+h/eM/xqiBn2IFdDYPynsx2vn6q83e3SWhQaSPohkOig6KkEv+mB+fpMo2A+0"
+    "iyi0ryyTK5pXhco19WNoP/IgFZzxfGzOS/mC6uZF1WVPAgMBAAECgYEAumZXP0DgGLt4YX5TdulcRsn3jRMssBRl"
+    "SLbZQw6iejENsWELS0aGyiNtu1+lBXygdeRyhAo50VF+LzevwTmbNea4LNp36VJucfuJZkYQrdoRS5WRZaAbDU4n"
+    "6YUrEVEfzGtHQcveLuSAV26WkhQ7g00YDc/0GYa2U7uCbWIOaYECQQDfM5/I6RKBXNw9mrHIdyVwEQgosQR/AiMs"
+    "FoqPIDy1nwof1QbCAaLwLW1NUkYrI3YS36fW5iCpwtMu5U8pUfIPAkEA23L+HTLsQZX6lhR+JSxspmLZQWmJ7QjZ"
+    "f5j4zWhDmafh1PiBBcgkOmWTJIY5+u9IShhLfo3vfnWUxuNG1FuYwQJAK9huSP9P/U2Kjid3SRPurMcLvUKYyYJX"
+    "+m8rJNaGVn85c+ta+n1rzpZ95DSHSC4dIbQBuntWa0K0TYAKPum0DQJAOANqCVnuI+98PsKMUEC+mtmwSpn9spsH"
+    "qSIKn6N1XcsUQaAMjsU/OgijPjdkpUBeW0tIOc1QzB6HExz//0RCAQJAer2BdKbLRS0cEyW13pbsLSlhpowqZ1SO"
+    "uGwaeAVVtQH98GEZMidY+sgR5M4e3BJ1ZYTkgmMNrEdPPaLHXcwYiQ=="
+)
+
+
 @lru_cache(maxsize=1)
 def make_rsa_keypair() -> tuple[rsa.RSAPrivateKey, str]:
-    """Return (private_key, plain base64 DER SPKI)."""
-    private_key = rsa.generate_private_key(public_exponent=65537, key_size=1024)
+    """Return (private_key, plain base64 DER SPKI) for the fixed synthetic key.
+
+    Deterministic by design: the key is a committed vector (see
+    ``_SYNTHETIC_RSA_PRIVATE_DER_B64``) rather than a fresh random one, so its base64
+    SPKI reliably contains both ``+`` and ``/`` and the wire-escape assertions never
+    flake. Still a genuine 1024-bit RSA key, so key-shape/padding tests are unaffected.
+    """
+    private_key = serialization.load_der_private_key(
+        base64.b64decode(_SYNTHETIC_RSA_PRIVATE_DER_B64), None
+    )
+    assert isinstance(private_key, rsa.RSAPrivateKey)
     der = private_key.public_key().public_bytes(
         serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
     )
@@ -42,7 +74,11 @@ def make_rsa_keypair() -> tuple[rsa.RSAPrivateKey, str]:
 
 
 def firmware_style_key() -> str:
-    """The challenge key as the firmware sends it: URL-encoded, lowercase escapes."""
+    """The challenge key as the firmware sends it: URL-encoded, lowercase escapes.
+
+    Built from the fixed synthetic key, whose SPKI base64 contains both ``+`` and ``/``,
+    so the result always contains the lowercase ``%2b`` and ``%2f`` escapes.
+    """
     _, b64 = make_rsa_keypair()
     encoded = quote(b64, safe="")
     return encoded.replace("%2B", "%2b").replace("%2F", "%2f").replace("%3D", "%3d")
