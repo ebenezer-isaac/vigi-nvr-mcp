@@ -43,7 +43,7 @@ LEAKS = {
     "hex32": "token " + "ab" * 16,
     "stok": "url /st" + "ok=abc123/ds",
     "cipher_field": '{"cipher' + 'text": "QUJDREVG"}',
-    "password_assign": "VIGI_NVR_PASS" + "WORD=hunter2",
+    "password_assign": "TPLINK_NVR_PASS" + "WORD=hunter2",
 }
 
 
@@ -62,8 +62,8 @@ def test_each_leak_pattern_is_detected(name: str) -> None:
         f"not private {_ip(172, 15, 0, 1)}",
         "POST https://<nvr-host>/st" + "ok=<token>/ds",
         'url = f"/st' + 'ok={token}/ds"',
-        "VIGI_NVR_PASS" + "WORD=<your-nvr-password>",
-        "VIGI_NVR_PASS" + "WORD=",
+        "TPLINK_NVR_PASS" + "WORD=<your-nvr-password>",
+        "TPLINK_NVR_PASS" + "WORD=",
         '{"cipher' + 'text": "<redacted>"}',
         "hex31 " + "a" * 31,
         "hex33 " + "a" * 33,

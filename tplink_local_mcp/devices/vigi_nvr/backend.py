@@ -69,7 +69,7 @@ class VigiNvrBackend:
             "encrypt_type_offered": list(challenge.encrypt_type),
             "encrypt_type_selected": selected,
             "challenge_code": challenge.code,
-            "attempts_remaining": challenge.time,
+            "attempts_left": challenge.time,
             "max_attempts": challenge.max_time,
             "lock_seconds_left": challenge.sec_left,
             "key_present": challenge.key is not None,
