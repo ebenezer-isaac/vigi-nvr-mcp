@@ -15,11 +15,22 @@ from ..client import NvrClient
 from ..core.config import DeviceSettings, load_device_settings
 from ..core.envelope import fail, from_error, ok
 from ..core.errors import DeviceError
-from ..tools import ToolContext, backup, channels, device, raw, storage
+from ..tools import (
+    ToolContext,
+    backup,
+    channels,
+    detection,
+    device,
+    events,
+    media,
+    raw,
+    storage,
+    system,
+)
 from ..transport import NvrTransport
 
 ENV_PREFIX = "VIGI_NVR_"
-TOOL_MODULES = (device, raw, channels, storage, backup)
+TOOL_MODULES = (device, raw, channels, storage, backup, media, detection, events, system)
 
 
 class NvrBackend:

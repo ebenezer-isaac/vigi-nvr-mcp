@@ -87,6 +87,15 @@ class AuthFailed(DeviceError):
         }
 
 
+class ProtocolError(DeviceError):
+    """A reply was valid HTTP/JSON with ``error_code == 0`` but did not contain
+    the section or fields a typed tool needs to normalise it. Distinct from
+    ``TransportError`` (transport/HTTP/JSON failure) and ``ApiError`` (the device
+    reported a non-zero code): here the device said OK but the shape was wrong."""
+
+    kind = "PROTOCOL_ERROR"
+
+
 class TokenExpired(DeviceError):
     """An authenticated call reported the session as invalid or timed out."""
 

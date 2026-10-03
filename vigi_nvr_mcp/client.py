@@ -29,6 +29,18 @@ MAX_PARAM_BYTES = 64 * 1024
 # Delete is by channel id, batched:   {"method":"do","chm":{"chm_del_dev":{"ids":["7"]}}}
 # Move REPLACES whatever occupies new_id: {"method":"do","chm":{"chm_mod_dev_chn":
 #                                          {"old_id":"9","new_id":"1"}}}
+# Sections of the unusual_detection module that read as event/alert states
+# (static extraction; unverified until first live run).
+UNUSUAL_SECTIONS = (
+    "login_error",
+    "hd_error",
+    "hd_lack",
+    "hd_miss",
+    "ip_conflict",
+    "vedio_miss",
+    "fan_work_abnormal",
+)
+
 CHANNEL_TABLE = ("get", "chm", {"table": "added_dev"})
 CHANNEL_DELETE = ("do", "chm", "chm_del_dev")
 CHANNEL_MOVE = ("do", "chm", "chm_mod_dev_chn")
@@ -36,7 +48,11 @@ CHANNEL_MOVE = ("do", "chm", "chm_mod_dev_chn")
 CONFIG_BACKUP = ("do", "system", "download_conf")
 
 # name -> (method, module, params). Sections from static extraction; see docstring.
-READ_QUERIES: MappingProxyType[str, tuple[str, str, dict[str, Any]]] = MappingProxyType(
+# The entries below marked "unverified" were extracted statically from the web
+# client (endpoints.json) and have not been confirmed against a live NVR yet; the
+# module/method are grounded in the inventory but the exact section params may
+# need correcting after the first live run (Phase N5).
+READ_QUERIES: MappingProxyType[str, tuple[str, str, dict[str, Any] | None]] = MappingProxyType(
     {
         "device_info": ("get", "device_info", {"name": ["basic_info"]}),
         "module_spec": ("get", "function", {"name": ["module_spec"]}),
@@ -46,6 +62,18 @@ READ_QUERIES: MappingProxyType[str, tuple[str, str, dict[str, Any]]] = MappingPr
         "recording_status": ("get", "harddisk_manage", {"name": ["harddisk"]}),
         "network": ("get", "network", {"name": ["wan"]}),
         "system": ("get", "system", {"name": ["basic"]}),
+        # --- N3 typed reads (unverified until first live run) ---
+        "video_config": ("get", "video", {"name": ["main_res", "minor_res"]}),
+        "advance_settings": ("get", "advance_settings", {"name": ["advance_settings"]}),
+        "storage_plan": ("get", "plan_advance", {"name": ["plan_advance"]}),
+        "record_plan": ("get", "record_plan", {"name": ["record_plan"]}),
+        "users": ("get", "user_management", {"name": ["user_management"]}),
+        "firewall": ("get", "firewall", {"name": ["blacklist", "whitelist", "ipctrl"]}),
+        "firewall_protocol": ("get", "protocol", {"table": "table"}),
+        "cloud_status": ("get", "cloud_status", None),
+        "cloud_config": ("get", "cloud_config", {"name": ["bind", "info"]}),
+        "time": ("get", "system", {"name": ["clock_status", "date", "dst"]}),
+        "events": ("get", "unusual_detection", {"name": list(UNUSUAL_SECTIONS)}),
     }
 )
 
@@ -114,6 +142,69 @@ class NvrClient:
 
     async def get_system(self) -> dict[str, Any]:
         return await self.query("system")
+
+    async def get_image_config(self, channel: int) -> dict[str, dict[str, Any]]:
+        """Image/OSD/privacy-mask/ROI config for one channel.
+
+        Four reads (image, OSD, cover, ROI), keyed by module in the result.
+        Per-channel sections use the ``chn<N>_<section>`` convention.
+        Unverified until first live run.
+        """
+        n = int(channel)
+        out: dict[str, dict[str, Any]] = {}
+        out["image"] = await self.call(
+            "get", "image", {"name": [f"chn{n}_common", f"chn{n}_switch"]}
+        )
+        out["OSD"] = await self.call("get", "OSD", {"name": [f"chn{n}_name", f"chn{n}_basic"]})
+        out["cover"] = await self.call("get", "cover", {"name": [f"chn{n}_cover"]})
+        out["ROI"] = await self.call("get", "ROI", {"name": [f"chn{n}_main_roi", f"chn{n}_on_off"]})
+        return out
+
+    async def get_detection_config(self, channel: int, module: str) -> dict[str, Any]:
+        """One detection module's config for one channel (read-only).
+
+        ``module`` is one of the twelve ``*_detection`` modules. Unverified until
+        first live run.
+        """
+        n = int(channel)
+        return await self.call("get", module, {"name": [f"chn{n}_region_info"]})
+
+    async def search_recordings(self, channel: int, date: str) -> dict[str, Any]:
+        """Recorded segments for one channel on one ``YYYY-MM-DD`` day (read-only).
+
+        Issued as a ``get`` so it can never trip the write gate. Unverified until
+        first live run.
+        """
+        return await self.call("get", "playback", {"channel": str(int(channel)), "date": date})
+
+    async def get_storage(self) -> dict[str, dict[str, Any]]:
+        """Disks plus recording/overwrite policy. Unverified until first live run."""
+        return {
+            "disks": await self.query("disks"),
+            "plan_advance": await self.query("storage_plan"),
+            "record_plan": await self.query("record_plan"),
+        }
+
+    async def get_users(self) -> dict[str, Any]:
+        return await self.query("users")
+
+    async def get_firewall(self) -> dict[str, dict[str, Any]]:
+        return {
+            "firewall": await self.query("firewall"),
+            "protocol": await self.query("firewall_protocol"),
+        }
+
+    async def get_cloud_status(self) -> dict[str, dict[str, Any]]:
+        return {
+            "cloud_status": await self.query("cloud_status"),
+            "cloud_config": await self.query("cloud_config"),
+        }
+
+    async def get_time(self) -> dict[str, Any]:
+        return await self.query("time")
+
+    async def list_events(self) -> dict[str, Any]:
+        return await self.query("events")
 
     async def list_channels(self) -> list[dict[str, Any]]:
         """Channel rows (unredacted; callers must redact before exposing)."""

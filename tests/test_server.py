@@ -37,6 +37,17 @@ EXPECTED_TOOLS = {
     "nvr_list_disks",
     "nvr_get_recording_status",
     "nvr_backup_config",
+    # Phase N3 typed read tools
+    "nvr_get_video_config",
+    "nvr_get_image_config",
+    "nvr_get_detection_config",
+    "nvr_get_storage",
+    "nvr_search_recordings",
+    "nvr_list_events",
+    "nvr_get_users",
+    "nvr_get_firewall",
+    "nvr_get_cloud_status",
+    "nvr_get_time",
 }
 
 
