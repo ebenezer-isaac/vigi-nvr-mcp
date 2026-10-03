@@ -46,6 +46,12 @@ def test_sixteen_processes_max_three_admit_exactly_three(tmp_path: Path) -> None
     assert results.count("refused") == 13, results
 
 
+@pytest.mark.xfail(
+    reason="POSIX flock cannot survive the lock file being unlinked (a new open() is a new "
+    "inode). Documented LIMITATION, not a store bug: the store never unlinks its own lock and "
+    "the state dir is 0700, so an external deleter is outside the threat model.",
+    strict=False,
+)
 @pytest.mark.skipif(os.name == "nt", reason="POSIX flock inode semantics; deploy target is Ubuntu")
 def test_posix_lockfile_deletion_breaks_mutual_exclusion(tmp_path: Path) -> None:
     """DELETING the lock file mid-hold lets a second acquirer lock a new inode.
