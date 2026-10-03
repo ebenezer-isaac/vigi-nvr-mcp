@@ -48,6 +48,20 @@ The inventory is the coverage. Every one of the 586 calls becomes reachable, val
 
 **Done when** `nvr_call` can reach every catalogued call in tests via a fake transport and the count assertions pass.
 
+**Wire shapes (CI-F1 fix, breaker r2).** A call is identified by `(module, method, key)`, but the firmware does not nest every call's params the same way — the `key` means different things per method/convention. `build_body` therefore derives one `CallSpec.shape ∈ {name_list, name, table, action, bare}` deterministically (from the inventory conventions in `endpoints.json._conventions` and the verified request captures in `discovery/_tools/raw-calls.json` + `channel-management.md`) and applies it. `params` passed to `nvr_call`/`build_body` is always the call's **inner** body (the fields `params_example` lists); the shape supplies the wrapper:
+
+| shape | wire body | when |
+|---|---|---|
+| `table` | `{<module>: {"table": <key>}}` | `get` whose key is a verified table (returns rows), e.g. `chm/get/added_dev` → `{"chm":{"table":"added_dev"}}` |
+| `name` | `{<module>: {"name": <key>}}` | `get` whose key is a verified scalar-name section, e.g. `function/get/module_spec` |
+| `name_list` | `{<module>: {"name": [<key>]}}` | every other real-keyed `get` (the list form the web client uses throughout) — the default |
+| `action` | `{<module>: {<key>: {...params}}}` | `do`/`set`/`add`/`delete` with a real sub-method key, e.g. `chm/do/chm_mod_dev_chn` → `{"chm":{"chm_mod_dev_chn":{"old_id":"9","new_id":"1"}}}` |
+| `bare` | `{<module>: {...params}}` | the few calls whose key is `(dynamic)`/absent — params pass straight through; flagged as such in `nvr_describe_call` |
+
+For an `action` call `build_body` also accepts an already-wrapped `{<key>: {...}}` body (it is not double-wrapped), and the unknown-top-level-key check validates the **inner** params against `params_example` — so the device-correct body is never rejected and a wrapper-less body is never emitted. `nvr_describe_call` returns a `wire_example`: the exact full body to put on the wire. The shape is verified against the `channel-management.md` envelopes and the `raw-calls.json` fixtures in `tests/test_catalog_wire_shapes.py`.
+
+**Catalog integrity (CI-F2/CI-F3 fixes).** The vendored `endpoints.json`/`errcodes.json` each carry a sidecar `<stem>.sha256` (SHA-256 of the canonical UTF-8 JSON text, written by `scripts/sanitize_catalog.py`); `Catalog.load()`/`code_to_symbol()` recompute and compare it, so a **count-preserving** tamper (a flipped `mutates` flag, a rewritten `params_example`, a swapped `method`) raises `ConfigError` at startup, not inside a tool. Param string validation rejects any Unicode Cc/Cf/Zl/Zp character via `has_forbidden_chars` (so U+2028/U+2029 line separators and the U+FEFF BOM no longer pass the C0/C1-only screen) and lone UTF-16 surrogates as `InvalidInput` before any `.encode()`.
+
 ## Phase N3 — typed read tools (one agent; may split N3a/N3b if > 14 files)
 
 Hand-written, LLM-friendly tools for the high-value reads. Each returns a normalised pydantic model under `data` plus `raw` when `include_raw=True`. All use `client.call`; none bypass the catalog validation.

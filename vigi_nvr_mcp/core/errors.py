@@ -168,6 +168,15 @@ class LockoutGuard(DeviceError):
         }
 
 
+class WriteNotEnabled(DeviceError):
+    """A gated write reached the guarded executor without writes enabled.
+
+    Defense-in-depth: the two-key gate normally refuses before the executor is
+    reached, so this only fires if a mutating path forgets it. Fails closed."""
+
+    kind = "WRITE_REFUSED"
+
+
 class NotFound(DeviceError):
     kind = "NOT_FOUND"
 

@@ -24,6 +24,7 @@ this over the discovery inventory; re-running it is idempotent.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sys
@@ -106,6 +107,18 @@ def count_inventory(data: dict[str, Any]) -> tuple[int, int, int]:
     return len(modules), len(calls), mutating
 
 
+def write_sidecar(json_path: Path) -> Path:
+    """Write ``<stem>.sha256`` next to ``json_path``: the SHA-256 of its canonical
+    UTF-8 text (newline-normalised on read, so the digest is independent of the
+    checkout's line endings). The catalog loader recomputes and compares this to
+    refuse a count-preserving tamper the aggregate counters would miss."""
+    text = json_path.read_text(encoding="utf-8")
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    sidecar = json_path.with_name(json_path.stem + ".sha256")
+    sidecar.write_text(digest + "\n", encoding="utf-8", newline="\n")
+    return sidecar
+
+
 def _assert_clean(output_path: Path) -> None:
     # Imported lazily so the pure helpers above can be used without scripts/ on
     # the import path (e.g. from tests via importlib).
@@ -138,6 +151,12 @@ def sanitize_file(input_path: Path, output_path: Path) -> dict[str, Any]:
         json.dumps(clean, indent=1, ensure_ascii=False) + "\n", encoding="utf-8", newline="\n"
     )
     _assert_clean(output_path)
+    # Integrity sidecars: the endpoints file just written, and the errcodes file
+    # vendored beside it (both verified at load by vigi_nvr_mcp.catalog).
+    write_sidecar(output_path)
+    errcodes = output_path.with_name("errcodes.json")
+    if errcodes.exists():
+        write_sidecar(errcodes)
     return clean
 
 

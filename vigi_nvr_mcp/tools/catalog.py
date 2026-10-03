@@ -51,7 +51,16 @@ async def describe_call(ctx: ToolContext, module: str, method: str, key: str) ->
             f"No catalogued call {module}/{method}/{key}.",
             {"nearest": cat.nearest(module, method, key)},
         )
-    return ok(spec.model_dump())
+    data = spec.model_dump()
+    # The exact full wire body, with the name/table/action-key wrapper the firmware
+    # dispatches on; pass params as this example's inner fields to nvr_call.
+    data["wire_example"] = cat.wire_example(spec)
+    if spec.shape == "bare":
+        data["note"] = (
+            "This call's key is dynamic/unknown, so there is no fixed wrapper: pass the "
+            "full module body as params (pass-through)."
+        )
+    return ok(data)
 
 
 def register(mcp: FastMCP, ctx: ToolContext) -> list[str]:

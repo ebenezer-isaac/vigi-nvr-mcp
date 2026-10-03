@@ -11,9 +11,13 @@ the downloaded bytes are validated before being accepted as a backup: HTML/XML, 
 JSON error envelope, or an implausibly small body (< 1 KB) is rejected so a bogus
 file is never presented as a safety net before destructive cleanup.
 
-The backup does not modify the NVR, so it is NOT write-gated: it must be callable
-before any cleanup. The file is written to ``VIGI_NVR_BACKUP_DIR`` (default
-``./backups``, git-ignored) with mode 0600. It may contain credentials.
+The backup issues a ``do`` (``download_conf``), so it routes through the single
+``GuardedWriter`` like every other non-``get`` path — but with ``require_gate=False``:
+it is NOT two-key write-gated (it must be callable *before* any cleanup, with
+``ALLOW_WRITES`` off), yet it still honours ``VIGI_NVR_DRY_RUN`` (returning
+``{dry_run: true, request}`` and touching neither the device nor the disk) and
+serialises against real writes. The file is written to ``VIGI_NVR_BACKUP_DIR``
+(default ``./backups``, git-ignored) with mode 0600. It may contain credentials.
 """
 
 from __future__ import annotations
@@ -78,6 +82,10 @@ def write_private_file(directory: Path, name: str, data: bytes) -> Path:
 
 
 async def backup_config(ctx: ToolContext) -> dict[str, Any]:
+    # The config export is a `do`; under VIGI_NVR_DRY_RUN the GuardedWriter returns
+    # this request and performs zero I/O (no device call, no file written).
+    request = {"method": "do", "system": {"download_conf": None}}
+
     async def action() -> dict[str, Any]:
         reply = await ctx.client.request_config_backup()
         data = await ctx.client.download_session_file(_extract_url(reply))
@@ -94,7 +102,10 @@ async def backup_config(ctx: ToolContext) -> dict[str, Any]:
             "The download URL is unverified until the first live run confirms it.",
         }
 
-    return await run_tool("nvr_backup_config", action)
+    # require_gate=False: backup is serialised and dry-run-aware but not write-gated.
+    return await run_tool(
+        "nvr_backup_config", lambda: ctx.writes.run(request, action, require_gate=False)
+    )
 
 
 def register(mcp: FastMCP, ctx: ToolContext) -> list[str]:
