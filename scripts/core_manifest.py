@@ -28,10 +28,14 @@ VERSION_FILE = CORE_DIR / "VERSION"
 
 
 def _normalise(rel: str, data: bytes, package_name: str) -> bytes:
-    """Neutralise the one package-name line in ``core/README.md`` before hashing."""
+    """Normalise before hashing so the manifest is stable across repos/platforms.
+
+    CRLF is folded to LF (a Windows-vs-Linux checkout must not change the hash), and
+    the one package-name line in ``core/README.md`` is neutralised to ``<PACKAGE>``.
+    """
+    data = data.replace(b"\r\n", b"\n")
     if rel == "core/README.md":
-        text = data.decode("utf-8").replace(package_name, "<PACKAGE>")
-        return text.encode("utf-8")
+        return data.decode("utf-8").replace(package_name, "<PACKAGE>").encode("utf-8")
     return data
 
 
@@ -84,7 +88,9 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         print("core/VERSION is up to date.")
         return 0
-    VERSION_FILE.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    VERSION_FILE.write_text(
+        json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n"
+    )
     print(f"wrote {VERSION_FILE} ({len(document['manifest'])} files, v{VERSION})")
     return 0
 
