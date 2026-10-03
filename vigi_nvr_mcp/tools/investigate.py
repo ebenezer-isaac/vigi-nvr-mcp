@@ -438,9 +438,11 @@ async def purge_exports(ctx: ToolContext, confirm_write: bool = False) -> dict[s
     if refusal is not None:
         return refusal
 
+    retention_days = ctx.settings.export_retention_days
+    request = {"action": "purge_exports", "retention_days": retention_days}
+
     async def action() -> dict[str, Any]:
         directory = ctx.settings.export_path
-        retention_days = ctx.settings.export_retention_days
         retention_s = retention_days * 86400
         now = datetime.now(UTC).timestamp()
         expired = []
@@ -450,8 +452,6 @@ async def purge_exports(ctx: ToolContext, confirm_write: bool = False) -> dict[s
                 if is_export and now - item.stat().st_mtime > retention_s:
                     expired.append(item)
         names = [p.name for p in expired]
-        if ctx.settings.dry_run:
-            return {"dry_run": True, "retention_days": retention_days, "would_delete": names}
         for item in expired:
             with contextlib.suppress(OSError):
                 item.unlink()
@@ -462,7 +462,8 @@ async def purge_exports(ctx: ToolContext, confirm_write: bool = False) -> dict[s
             "count": len(names),
         }
 
-    return await run_tool("nvr_purge_exports", lambda: ctx.writes.run(action))
+    # Dry-run and serialisation are decided only by the guarded writer.
+    return await run_tool("nvr_purge_exports", lambda: ctx.writes.run(request, action))
 
 
 # --- export dir as MCP resources ----------------------------------------------

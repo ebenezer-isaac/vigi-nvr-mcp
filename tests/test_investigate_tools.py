@@ -437,9 +437,11 @@ async def test_export_dry_run_reports_reencode_plan(
     result = await export_tool.export_clip(
         ctx, runner, 5, START, END, confirm_write=True, target_max_mb=20, max_width=1280
     )
+    # Dry-run is centralised in the guarded writer: the re-encode plan rides on the
+    # echoed request.
     assert result["data"]["dry_run"] is True
-    assert result["data"]["reencode"]["crf"] >= 18
-    assert result["data"]["reencode"]["scale"] == "scale='min(iw,1280)':-2"
+    assert result["data"]["request"]["reencode"]["crf"] >= 18
+    assert result["data"]["request"]["reencode"]["scale"] == "scale='min(iw,1280)':-2"
 
 
 async def test_export_bad_target(
@@ -539,8 +541,10 @@ async def test_purge_dry_run_lists_without_deleting(
     _age(old, 10 * 86400)
     ctx = _ctx(make_ctx, export_dir, ALLOW_WRITES="true", DRY_RUN="true")
     result = await inv.purge_exports(ctx, confirm_write=True)
+    # Dry-run is centralised in the guarded writer: it echoes the purge request and
+    # deletes nothing.
     assert result["data"]["dry_run"] is True
-    assert result["data"]["would_delete"] == ["ch6_20260101t000000z_s1.jpg"]
+    assert result["data"]["request"] == {"action": "purge_exports", "retention_days": 7}
     assert old.exists()  # nothing deleted
 
 

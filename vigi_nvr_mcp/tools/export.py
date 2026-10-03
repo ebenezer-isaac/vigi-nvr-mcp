@@ -32,11 +32,11 @@ from ..media.ffmpeg import (
     EXPORT_SUFFIXES,
     FfmpegRunner,
     confine,
-    export_argv,
     export_timeout,
     probe_tcp,
 )
 from ..media.urls import (
+    format_timestamp,
     live_url,
     redacted_url,
     replay_url,
@@ -97,11 +97,10 @@ async def enable_rtsp(ctx: ToolContext, confirm_write: bool = False) -> dict[str
     if refusal is not None:
         return refusal
 
+    params = {ONVIF_SECTION: {"enabled": ENABLED_ON}}
+    request = {"method": "set", ONVIF_MODULE: params}
+
     async def action() -> dict[str, Any]:
-        params = {ONVIF_SECTION: {"enabled": ENABLED_ON}}
-        request = {"method": "set", ONVIF_MODULE: params}
-        if ctx.settings.dry_run:
-            return {"dry_run": True, "request": request}
         before_reply = await ctx.client.call("get", ONVIF_MODULE, {"name": ONVIF_SECTION})
         before, _ = _enabled_flag(before_reply)
         response = await ctx.client.call("set", ONVIF_MODULE, params)
@@ -115,7 +114,8 @@ async def enable_rtsp(ctx: ToolContext, confirm_write: bool = False) -> dict[str
             "enabled_after": after,
         }
 
-    return await run_tool("nvr_enable_rtsp", lambda: ctx.writes.run(action))
+    # Dry-run and serialisation are decided only by the guarded writer.
+    return await run_tool("nvr_enable_rtsp", lambda: ctx.writes.run(request, action))
 
 
 async def get_stream_url(ctx: ToolContext, channel: int, stream: int = 1) -> dict[str, Any]:
@@ -236,25 +236,32 @@ async def export_clip(
             ctx.settings, _parse_dt("start", start), _parse_dt("end", end)
         )
         reencode = target_max_mb is not None or max_width is not None
-        if ctx.settings.dry_run:
-            url = replay_url(ctx.settings, ch, st, start_utc, end_utc)
-            ffmpeg = ctx.settings.ffmpeg_path or "ffmpeg"
-            name = "ch<N>_<start>_<end>_s<stream>.mp4"
-            argv = export_argv(ffmpeg, redacted_url(url), name, export_timeout(duration_s))
-            out: dict[str, Any] = {"dry_run": True, "argv": argv, "duration_s": duration_s}
-            if reencode:
-                out["reencode"] = reencode_params(duration_s, target_max_mb, max_width)
-            return out
-        url = replay_url(ctx.settings, ch, st, start_utc, end_utc)
-        bitrate = await _estimate_bitrate(ctx, ch)
-        result = await runner.export_clip(
-            ch, st, start_utc, end_utc, url, duration_s, bitrate_bps=bitrate
-        )
+        # The dry-run echo: describes the export without any credential-bearing URL.
+        request: dict[str, Any] = {
+            "action": "export_clip",
+            "channel": ch,
+            "stream": st,
+            "start": format_timestamp(start_utc),
+            "end": format_timestamp(end_utc),
+            "duration_s": duration_s,
+        }
         if reencode:
-            result = await _transcode_to_target(
-                runner, result, duration_s, target_max_mb, max_width
+            request["reencode"] = reencode_params(duration_s, target_max_mb, max_width)
+
+        async def do_export() -> dict[str, Any]:
+            url = replay_url(ctx.settings, ch, st, start_utc, end_utc)
+            bitrate = await _estimate_bitrate(ctx, ch)
+            result = await runner.export_clip(
+                ch, st, start_utc, end_utc, url, duration_s, bitrate_bps=bitrate
             )
-        return result
+            if reencode:
+                result = await _transcode_to_target(
+                    runner, result, duration_s, target_max_mb, max_width
+                )
+            return result
+
+        # Dry-run and serialisation are decided only by the guarded writer.
+        return await ctx.writes.run(request, do_export)
 
     return await run_tool("nvr_export_clip", action)
 
@@ -312,6 +319,8 @@ async def delete_export(ctx: ToolContext, name: str, confirm_write: bool = False
     if refusal is not None:
         return refusal
 
+    request = {"action": "delete_export", "name": name}
+
     async def action() -> dict[str, Any]:
         target = confine(ctx.settings.export_path, name)
         if not target.exists():
@@ -319,7 +328,8 @@ async def delete_export(ctx: ToolContext, name: str, confirm_write: bool = False
         target.unlink()
         return {"deleted": True, "name": name}
 
-    return await run_tool("nvr_delete_export", action)
+    # Dry-run and serialisation are decided only by the guarded writer.
+    return await run_tool("nvr_delete_export", lambda: ctx.writes.run(request, action))
 
 
 def register(mcp: FastMCP, ctx: ToolContext) -> list[str]:

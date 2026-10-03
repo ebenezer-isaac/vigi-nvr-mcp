@@ -466,11 +466,16 @@ async def test_tool_export_dry_run_redacts_argv(
     result = await export_tool.export_clip(
         ctx, runner, 5, "2026-10-03T12:00:00Z", "2026-10-03T12:00:10Z", 1, confirm_write=True
     )
+    # Dry-run is centralised in the guarded writer: it echoes the request (which
+    # describes the export but never embeds a credential-bearing URL) and sends nothing.
     assert result["data"]["dry_run"] is True
-    argv = result["data"]["argv"]
-    joined = " ".join(argv)
-    assert PW not in joined and "p%40ss" not in joined
-    assert any("<redacted>:<redacted>@" in a for a in argv)
+    request = result["data"]["request"]
+    assert request["action"] == "export_clip"
+    assert request["channel"] == 5 and request["stream"] == 1
+    import json as _json
+
+    serialised = _json.dumps(result["data"])
+    assert PW not in serialised and "p%40ss" not in serialised
 
 
 async def test_tool_export_real(

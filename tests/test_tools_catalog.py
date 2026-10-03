@@ -27,7 +27,7 @@ def test_dry_run_has_a_single_implementation() -> None:
     echo = '{"dry_run": True, "request": request}'
     producers = [p for p in _PKG.rglob("*.py") if echo in p.read_text(encoding="utf-8")]
     assert producers == [_PKG / "core" / "serial.py"], producers
-    for tool in ("tools/channels.py", "tools/raw.py"):
+    for tool in ("tools/channels.py", "tools/raw.py", "tools/export.py", "tools/investigate.py"):
         src = (_PKG / tool).read_text(encoding="utf-8")
         assert "settings.dry_run" not in src, f"{tool} still branches on dry_run itself"
 
