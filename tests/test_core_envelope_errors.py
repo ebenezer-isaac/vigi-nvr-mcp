@@ -175,17 +175,27 @@ def test_remaining_attempt_guard(remaining, explicit, refused) -> None:
 
 
 async def test_run_tool_maps_errors_and_redacts() -> None:
+    from vigi_nvr_mcp.core.errors import InvalidInput
+
     async def leaky():
         return {"stok": "s", "ok": 1}
 
     async def bad_input():
-        raise ValueError("nope")
+        raise InvalidInput("nope")
+
+    async def stray_value_error():
+        # A plain ValueError is NOT client input (e.g. a truncated vendored file);
+        # it must become INTERNAL_ERROR, never be mislabelled INVALID_INPUT.
+        raise ValueError("line 1 column 17 (char 16)")
 
     async def boom():
         raise RuntimeError("internal detail")
 
     assert (await run_tool("t", leaky))["data"] == {"stok": "<redacted>", "ok": 1}
     assert (await run_tool("t", bad_input))["error"]["code"] == "INVALID_INPUT"
+    stray = await run_tool("t", stray_value_error)
+    assert stray["error"]["code"] == "INTERNAL_ERROR"
+    assert "char 16" not in stray["error"]["message"]
     internal = await run_tool("t", boom)
     assert internal["error"]["code"] == "INTERNAL_ERROR"
     assert "internal detail" not in internal["error"]["message"]

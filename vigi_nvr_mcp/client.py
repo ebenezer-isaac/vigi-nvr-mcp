@@ -16,13 +16,13 @@ from types import MappingProxyType
 from typing import Any
 
 from .auth import Authenticator
+from .catalog import validate_params
 from .core.config import DeviceSettings
-from .core.errors import TokenExpired
+from .core.errors import InvalidInput, TokenExpired
 from .transport import NvrTransport
 
 METHODS = frozenset({"get", "set", "do", "add", "delete", "forward"})
 MODULE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
-MAX_PARAM_BYTES = 64 * 1024
 
 
 # Verified channel primitives (vendor ConfCameraConnect page, fw 1.1.3).
@@ -79,16 +79,21 @@ READ_QUERIES: MappingProxyType[str, tuple[str, str, dict[str, Any] | None]] = Ma
 
 
 def validate_call(method: str, module: str, params: Any) -> None:
+    """Validate an outbound call before any I/O. Raises ``InvalidInput`` (a
+    ``ValueError``) so it maps to an ``INVALID_INPUT`` envelope.
+
+    Params are checked by the catalog's structural validator (depth <= 6 checked
+    before any recursion-prone work, <= 200 keys, strings <= 4 KB, no control
+    chars, keys ``[A-Za-z0-9_.-]{1,64}``), replacing the old ``len(repr(params))``
+    guard that itself recursed and could raise ``RecursionError`` on a depth bomb.
+    """
     if method not in METHODS:
-        raise ValueError(f"method must be one of {sorted(METHODS)}")
+        raise InvalidInput(f"method must be one of {sorted(METHODS)}")
     if not isinstance(module, str) or not MODULE_RE.fullmatch(module):
-        raise ValueError("module must match ^[A-Za-z][A-Za-z0-9_]{0,63}$")
+        raise InvalidInput("module must match ^[A-Za-z][A-Za-z0-9_]{0,63}$")
     if module == "method":
-        raise ValueError("module must not be 'method'")
-    if params is not None and not isinstance(params, dict):
-        raise ValueError("params must be an object or null")
-    if params is not None and len(repr(params)) > MAX_PARAM_BYTES:
-        raise ValueError("params too large")
+        raise InvalidInput("module must not be 'method'")
+    validate_params(params)
 
 
 class NvrClient:
@@ -101,6 +106,10 @@ class NvrClient:
 
     async def aclose(self) -> None:
         await self._transport.aclose()
+
+    @property
+    def observed_fingerprint(self) -> str | None:
+        return self._transport.observed_fingerprint
 
     async def login(self) -> dict[str, Any]:
         await self.auth.login()

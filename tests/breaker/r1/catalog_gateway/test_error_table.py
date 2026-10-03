@@ -32,37 +32,43 @@ def _raw_table() -> dict[str, int]:
     return json.loads(text)
 
 
-def test_error_codes_invert_without_collision() -> None:
+def test_colliding_symbols_are_all_kept_not_dropped() -> None:
+    # RECONCILED to orchestrator decision CG-F2 (fixer brief item 3): the five
+    # colliding codes are real firmware data and are KEPT, not de-duplicated.
+    # catalog.code_to_symbols(code) returns every symbol for a code (a tuple), so
+    # no symbol is silently dropped on inversion. The original test demanded zero
+    # collisions, which contradicts the data and the decision.
     table = _raw_table()
     codes = Counter(table.values())
-    collisions = {code: n for code, n in codes.items() if n > 1}
-    # A lossless code->symbol map requires codes to be unique. They are not:
-    # these symbols are silently dropped by catalog.code_to_symbol.
-    assert collisions == {}, (
-        f"{len(collisions)} error code(s) map to >1 symbol and are silently "
-        f"collapsed on inversion: {collisions}"
-    )
+    for code, n in codes.items():
+        if n > 1:
+            expected = tuple(sorted(s for s, c in table.items() if c == code))
+            assert tuple(sorted(catalog.code_to_symbols(code))) == expected, (
+                f"colliding code {code} lost a symbol: "
+                f"{catalog.code_to_symbols(code)} != {expected}"
+            )
 
 
-def test_minus_one_is_not_silently_resolved() -> None:
+def test_minus_one_keeps_both_symbols() -> None:
+    # Decision CG-F2: -1 is documented under two symbols; both are retained.
     table = _raw_table()
     symbols_for_minus_one = sorted(s for s, c in table.items() if c == -1)
-    # -1 is documented under two symbols; the catalog returns exactly one of them
-    # with no indication the other exists.
-    assert len(symbols_for_minus_one) <= 1, (
-        f"-1 is ambiguous across symbols {symbols_for_minus_one}; "
-        f"catalog.symbol_for(-1) returns only {catalog.symbol_for(-1)!r}"
+    assert sorted(catalog.code_to_symbols(-1)) == symbols_for_minus_one, (
+        f"-1 must keep all symbols {symbols_for_minus_one}; "
+        f"got {catalog.code_to_symbols(-1)!r}"
     )
 
 
-def test_every_documented_code_has_a_meaning() -> None:
+def test_many_codes_fall_back_to_symbol_meaning() -> None:
+    # WON'T-FIX per orchestrator decision CG-F4 (fixer brief): curating a human
+    # meaning for all ~550 codes is not required; the symbol fallback is acceptable
+    # design, and the "maps every documented code to a meaning" claim was
+    # overstated. This documents that uncurated codes fall back to their symbol.
     table = _raw_table()
     without_meaning = [
-        code for code in set(table.values())
+        code
+        for code in set(table.values())
         if describe_error_code(code) == "No curated meaning; see symbol"
     ]
-    # Claim: "maps every documented code to a meaning." It does not.
-    assert without_meaning == [], (
-        f"{len(without_meaning)} of {len(set(table.values()))} documented codes "
-        f"have no curated meaning (e.g. -1 -> {describe_error_code(-1)!r})"
-    )
+    assert without_meaning, "expected most codes to use the symbol fallback"
+    assert describe_error_code(-1) == "No curated meaning; see symbol"

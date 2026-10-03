@@ -21,6 +21,7 @@ from __future__ import annotations
 import pytest
 
 from vigi_nvr_mcp import catalog
+from vigi_nvr_mcp.core.errors import ConfigError
 from vigi_nvr_mcp.tools import raw
 
 
@@ -48,18 +49,15 @@ def _install_corrupt_catalog(monkeypatch: pytest.MonkeyPatch, text: str) -> None
     catalog.code_to_symbol.cache_clear()
 
 
-def test_tampered_errcodes_loads_silently(monkeypatch: pytest.MonkeyPatch) -> None:
-    # A file an attacker (or a bad merge) altered: -40401 now claims a bogus symbol.
+def test_tampered_errcodes_fails_loudly(monkeypatch: pytest.MonkeyPatch) -> None:
+    # FIXED (brief item 3): the loader now validates the symbol count and fails
+    # loudly with ConfigError on a tampered/truncated file, rather than silently
+    # serving a wrong symbol. The 1-entry tampered file has the wrong count.
     tampered = '{"ETOTALLY_WRONG": -40401}'
     try:
         _install_corrupt_catalog(monkeypatch, tampered)
-        symbol = catalog.symbol_for(-40401)
-        # Genuine table maps -40401 -> EUNAUTH; a loud loader would reject the
-        # tampered file. Instead it is accepted and the wrong symbol is served.
-        assert symbol == "EUNAUTH", (
-            f"tampered errcodes.json loaded with no integrity error; "
-            f"symbol_for(-40401) returned {symbol!r}"
-        )
+        with pytest.raises(ConfigError):
+            catalog.symbol_for(-40401)
     finally:
         catalog.code_to_symbol.cache_clear()
 
@@ -72,7 +70,8 @@ async def test_truncated_catalog_mislabeled_and_leaks_internals(
     ctx = make_ctx()
     try:
         _install_corrupt_catalog(monkeypatch, truncated)
-        result = await raw.nvr_call(ctx, "get", "system", {})
+        # RECONCILED (N1->N2): the N1 generic gateway is now nvr_raw_call.
+        result = await raw.nvr_raw_call(ctx, "get", "system", {})
     finally:
         catalog.code_to_symbol.cache_clear()
     # Claim: load fails loudly. A clear config/catalog error would name the

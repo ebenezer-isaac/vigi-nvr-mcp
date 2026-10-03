@@ -34,7 +34,8 @@ async def test_nested_params_return_envelope_not_recursionerror(make_ctx, fake) 
     ctx = make_ctx()
     deep = _nest(3000)  # ~48 KiB of repr, well under the 64 KiB guard
     try:
-        result = await raw.nvr_call(ctx, "get", "system", deep)
+        # RECONCILED (N1->N2): the N1 generic gateway is now nvr_raw_call.
+        result = await raw.nvr_raw_call(ctx, "get", "system", deep)
     except RecursionError:
         pytest.fail(
             "nvr_call raised RecursionError out of the tool (violates 'never raise "
