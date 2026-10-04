@@ -174,6 +174,17 @@ Bound cameras ("channels") live under the `chm` module:
 | List bindings | `get` `chm` `added_dev` | Rows carry `id`, `name`, `ip`, `port`, `protocol`, `online` (`"1"`/`"0"`), `conn_status`, `auth_result`, `uuid`, model; credential fields (`ciphertext`, etc.) are present on the wire but always redacted before a tool returns |
 | Remove a binding | `do` `chm` `chm_del_dev` | Unbinds a channel. This server re-reads the row first and refuses unless `expected_uuid` matches; refuses an `online=="1"` row unless `force=true` |
 | Move a binding | `set` `chm` `chm_mod_dev_chn` | Moves a binding to an empty slot, keeping its settings; refuses an occupied target |
+| Re-auth a binding | `do` `chm` `chm_edit_dev` | Pushes the channel's full `added_dev` row back with `username` and an RSA-encrypted `ciphertext` overwritten, to re-authenticate a camera whose stored password went stale. The password is encrypted with the device's **fixed** `$.encryptPub` key (fetched from `/web-static/lib/jquery-1.10.1.js`), not the per-session login key. The reply's `auth_result == -71558` is a transient "authenticating" state; this server re-reads until `conn_status == auth_result == "0"` |
+| Add a binding | `do` `chm` `chm_add_dev_list` | Binds a camera by IP: `{"device_list":[{"connect_prot","ip","port","username","ciphertext","passwd_strength":"low"}]}`. The new binding lands in the **first empty** channel slot (not a chosen id) and the name is **reset** to the model default (e.g. `C210`) |
+
+**Re-pointing a channel to a new IP.** `chm_edit_dev` returns `error_code 0` but
+**silently ignores the `ip` field** — `ip` is discovery-derived, not editable (only
+`name`/`username`/`ciphertext` take). To move a channel to a new camera IP you must
+**delete + re-add + rename**: `chm_del_dev` the old binding, `chm_add_dev_list` at the
+new IP (reusing the original row's `connect_prot` and `port`), poll `added_dev` for the
+row whose `uuid` matches to learn its new id, then `chm_edit_dev` to restore the
+original `name`. `nvr_renumber_channel` performs exactly this sequence. This does **not**
+change the camera's own IP/DHCP — the camera must already be reachable at the new IP.
 
 A **ghost** channel is a stale duplicate: another row shares its `uuid`, it is
 `online=="0"`, `conn_status != "0"`, and it either failed auth (`auth_result ==

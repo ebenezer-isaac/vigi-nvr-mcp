@@ -33,6 +33,45 @@ ENCRYPT_TYPE_DEFAULT = "1"
 _NONCE_RE = re.compile(r"^[\x21-\x39\x3b-\x7e]{1,128}$")  # printable ASCII, no ':' or space
 _PKCS1V15_OVERHEAD = 11
 
+# The device-password RSA public key (`$.encryptPub` in the firmware's jQuery). This
+# is a FIXED key baked into the firmware JS -- NOT the per-session login challenge
+# key -- used to encrypt a channel (camera) password for `chm_edit_dev`. It is a
+# public key, not a secret; it is fetched at runtime from the device's static JS and
+# this baked-in value is only a fallback / test fixture for one verified unit.
+# secret-scan: allow (public RSA-1024 SubjectPublicKeyInfo from firmware JS, not a secret)
+DEVICE_PASSWORD_PUBKEY_B64 = (
+    "MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQC6jsSvQoIXMDZzGvlchWD+g2Yc"  # noqa: S105
+    "IMH8GqcWQj/efEySFswD07o85hj1xaO5Nlj9OAGuidtBhnUvUMuytfeYkXKAiDX6"
+    "EcIYIaq1YAYU/MiA52ZXptKgcy/6Xe9C5ludLUoKAPCURqMwmMhIFy2uL8HyeoI"
+    "3HsIRfagQUMcBMrtZQQIDAQAB"
+)
+
+# $.encryptPub holds a PEM public key; capture the base64 DER between the markers.
+_ENCRYPT_PUB_RE = re.compile(
+    r'encryptPub\s*:\s*"-----BEGIN PUBLIC KEY-----(.*?)-----END PUBLIC KEY-----',
+    re.DOTALL,
+)
+
+
+def extract_device_password_pubkey(js_text: str) -> str:
+    """Extract the fixed device-password public key (``$.encryptPub``) from firmware JS.
+
+    Returns the base64 DER SubjectPublicKeyInfo with the PEM header/footer and any
+    line breaks (real or JS-escaped ``\\n``) stripped. Raises ``ValueError`` if the
+    key is absent, empty or not a loadable RSA public key.
+    """
+    if not isinstance(js_text, str):
+        raise TypeError("js_text must be str")
+    match = _ENCRYPT_PUB_RE.search(js_text)
+    if match is None:
+        raise ValueError("encryptPub public key not found in device JS")
+    body = match.group(1).replace("\\r", "").replace("\\n", "")
+    b64 = re.sub(r"\s+", "", body)
+    if not b64:
+        raise ValueError("encryptPub public key is empty")
+    load_challenge_public_key(b64)  # validate it is a real RSA SPKI (fail loud)
+    return b64
+
 
 def md5_auth_pwd(password: str) -> str:
     if not isinstance(password, str):

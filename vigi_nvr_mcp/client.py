@@ -15,10 +15,11 @@ import re
 from types import MappingProxyType
 from typing import Any
 
+from . import crypto
 from .auth import Authenticator
 from .catalog import validate_params
 from .core.config import DeviceSettings
-from .core.errors import InvalidInput, TokenExpired
+from .core.errors import InvalidInput, TokenExpired, TransportError
 from .transport import NvrTransport
 
 METHODS = frozenset({"get", "set", "do", "add", "delete", "forward"})
@@ -44,6 +45,16 @@ UNUSUAL_SECTIONS = (
 CHANNEL_TABLE = ("get", "chm", {"table": "added_dev"})
 CHANNEL_DELETE = ("do", "chm", "chm_del_dev")
 CHANNEL_MOVE = ("do", "chm", "chm_mod_dev_chn")
+# Bind (add) one or more cameras by IP. The re-add lands in the first empty slot
+# and resets the channel name to the model default:
+# {"method":"do","chm":{"chm_add_dev_list":{"device_list":[{"connect_prot":...,
+#  "ip":...,"port":...,"username":...,"ciphertext":<rsa>,"passwd_strength":"low"}]}}}
+CHANNEL_ADD = ("do", "chm", "chm_add_dev_list")
+# Re-authenticate a bound channel by pushing an encrypted credential to it:
+# {"method":"do","chm":{"chm_edit_dev": <full added_dev row, creds overwritten>}}
+CHANNEL_EDIT = ("do", "chm", "chm_edit_dev")
+# Unauthenticated static asset carrying the firmware's $.encryptPub public key.
+DEVICE_PASSWORD_PUBKEY_JS_PATH = "/web-static/lib/jquery-1.10.1.js"  # noqa: S105 - a URL path
 # Config backup: {"method":"do","system":{"download_conf":null}} -> {"url": ...}
 CONFIG_BACKUP = ("do", "system", "download_conf")
 
@@ -103,6 +114,7 @@ class NvrClient:
         self.settings = settings
         self.auth = auth
         self._transport = transport
+        self._device_password_pubkey: str | None = None
 
     async def aclose(self) -> None:
         await self._transport.aclose()
@@ -228,6 +240,37 @@ class NvrClient:
         """Move a binding to another slot (replaces any occupant). Mutating."""
         method, module, action = CHANNEL_MOVE
         return await self.call(method, module, {action: {"old_id": old_id, "new_id": new_id}})
+
+    async def add_channel(self, device: dict[str, Any]) -> dict[str, Any]:
+        """Bind (add) one camera described by ``device`` (``connect_prot``, ``ip``,
+        ``port``, ``username``, encrypted ``ciphertext``, ``passwd_strength``). The
+        firmware places it in the first empty channel slot and resets its name to the
+        model default. Mutating: callers must apply the write gate."""
+        method, module, action = CHANNEL_ADD
+        return await self.call(method, module, {action: {"device_list": [device]}})
+
+    async def device_password_pubkey(self) -> str:
+        """The fixed device-password RSA public key (``$.encryptPub``), cached.
+
+        Fetched once via an unauthenticated static GET of the firmware JS and parsed;
+        if the asset cannot be fetched or parsed, the baked-in verified value is used
+        so the feature degrades gracefully rather than failing. Read-only.
+        """
+        if self._device_password_pubkey is None:
+            try:
+                js = await self._transport.get_static_file(DEVICE_PASSWORD_PUBKEY_JS_PATH)
+                key = crypto.extract_device_password_pubkey(js.decode("utf-8", errors="replace"))
+            except (TransportError, ValueError):
+                key = crypto.DEVICE_PASSWORD_PUBKEY_B64
+            self._device_password_pubkey = key
+        return self._device_password_pubkey
+
+    async def set_channel_credentials(self, device_row: dict[str, Any]) -> dict[str, Any]:
+        """Re-authenticate a bound channel by pushing an edited ``added_dev`` row
+        (username + encrypted ciphertext overwritten). Mutating: callers apply the
+        write gate. ``device_row`` must already have client-only ``_``-keys stripped."""
+        method, module, action = CHANNEL_EDIT
+        return await self.call(method, module, {action: device_row})
 
     async def request_config_backup(self) -> dict[str, Any]:
         """Ask the NVR to prepare a config backup; reply carries a relative ``url``."""

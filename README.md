@@ -256,6 +256,8 @@ write gates.
 | `nvr_backup_config` | read | Download the config backup (`download_conf`); not write-gated, so run it before any cleanup |
 | `nvr_remove_channel` | **write** | Unbind a channel (`chm_del_dev`); refuses a live row unless `force=true` |
 | `nvr_move_channel` | **write** | Move a binding to an empty slot (`chm_mod_dev_chn`), keeping its settings |
+| `nvr_set_channel_credentials` | **write** | Re-authenticate a bound camera by pushing a username + RSA-encrypted password (`chm_edit_dev`); polls until it reconnects |
+| `nvr_renumber_channel` | **write** | Re-point a bound channel to a new camera IP (delete + re-add + rename, since `chm_edit_dev` ignores `ip`); DESTRUCTIVE and the channel id changes. Camera must already be reachable at the new IP |
 
 ### Storage & recording
 

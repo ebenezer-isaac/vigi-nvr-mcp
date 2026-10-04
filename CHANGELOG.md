@@ -3,6 +3,31 @@
 All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **`nvr_set_channel_credentials`.** Re-authenticate a bound NVR channel by pushing
+  a username and an RSA-encrypted password to it (`chm_edit_dev`), recovering a
+  camera whose stored credentials went stale. The password is encrypted with the
+  device's fixed `$.encryptPub` key (fetched at runtime from the firmware JS and
+  cached, with a verified baked-in fallback), never the per-session login key, and
+  is never logged. Double write-gated with a live `expected_uuid` check like the
+  other channel mutations, honours dry-run, and polls the channel list until it
+  reports connected+authenticated — treating the transient `auth_result == -71558`
+  "authenticating" state as success-in-progress, not a failure.
+- **`nvr_renumber_channel`.** Re-point an already-bound channel to a new camera IP.
+  Because `chm_edit_dev` returns `error_code 0` but silently ignores the `ip` field
+  (ip is discovery-derived, not editable), this is done as delete + re-add + rename:
+  unbind (`chm_del_dev`), re-add at the new IP (`chm_add_dev_list`, reusing the row's
+  `connect_prot`/`port`), find the re-added row by `uuid` to learn its new slot id,
+  then restore the original name and re-assert auth (`chm_edit_dev`). DESTRUCTIVE and
+  the channel id changes; it does not change the camera's own IP/DHCP (the camera must
+  already be reachable at the new IP). Same two-key write gate + live `expected_uuid`
+  check as the other channel mutations, honours dry-run (echoing all three planned
+  requests), redacts credential fields, and polls until the channel settles — treating
+  the transient `auth_result` values `-71558`/`-71560` as "authenticating", not failure.
+
 ## [0.1.0] — 2026-10-03
 
 First public release: a complete, read-first, lockout-aware MCP server for a

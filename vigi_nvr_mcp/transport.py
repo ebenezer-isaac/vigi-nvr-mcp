@@ -35,6 +35,7 @@ EXPIRY_CODES = frozenset({UNAUTHORISED, SESSION_TIMEOUT})
 STOK_RE = re.compile(r"^[0-9A-Fa-f]{32}$")
 register_token_mask(r"stok=[^/\s\"']+", "stok=<redacted>")
 MAX_BACKUP_BYTES = 64 * 1024 * 1024
+MAX_STATIC_BYTES = 8 * 1024 * 1024
 
 # Characters encodeURIComponent leaves unescaped (besides ASCII alphanumerics).
 _URI_COMPONENT_SAFE = "-_.!~*'()"
@@ -133,6 +134,14 @@ class NvrTransport:
         return await self._http.get_bytes(
             f"/stok={self._checked(token)}{path}", max_bytes=MAX_BACKUP_BYTES
         )
+
+    async def get_static_file(self, relative_url: str) -> bytes:
+        """GET an UNAUTHENTICATED static asset the NVR serves (no stok), e.g. the
+        firmware's bundled JS. Same TLS pinning and size cap as every other GET."""
+        path = relative_url if relative_url.startswith("/") else "/" + relative_url
+        if ".." in path or "//" in path or "\\" in path:
+            raise TransportError("refusing to fetch an unsafe static path")
+        return await self._http.get_bytes(path, max_bytes=MAX_STATIC_BYTES)
 
     @staticmethod
     def _checked(token: str) -> str:

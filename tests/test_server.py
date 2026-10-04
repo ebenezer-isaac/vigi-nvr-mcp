@@ -39,6 +39,8 @@ EXPECTED_TOOLS = {
     "nvr_plan_channel_cleanup",
     "nvr_remove_channel",
     "nvr_move_channel",
+    "nvr_set_channel_credentials",
+    "nvr_renumber_channel",
     "nvr_list_disks",
     "nvr_get_recording_status",
     "nvr_backup_config",
